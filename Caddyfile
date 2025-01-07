@@ -1,0 +1,25 @@
+# Testing Caddyfile
+
+{
+    debug
+    order client_hello before respond
+    #    order client_hello after reverse_proxy
+    client_hello {
+        max_client_hello_size 10000
+    }
+    servers {
+        protocols h1 h2
+        listener_wrappers {
+            http_redirect
+            client_hello
+            tls
+        }
+    }
+}
+
+localhost {
+    client_hello
+    tls internal
+    respond "Your ClientHello: {header.X-TLS-ClientHello}"
+    #    reverse_proxy localhost:8080
+}
