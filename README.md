@@ -6,7 +6,7 @@ A caddy plugin to forward TLS `ClientHello` packets on requests as a header.
 
 ```shell
 xcaddy build \
-  --with github.com/rushiiMachine/caddy-clienthello
+  --with github.com/prosopo/chaddy
 ```
 
 ## Sample Caddyfile

@@ -1,4 +1,4 @@
-module github.com/rushiiMachine/caddy-clienthello
+module github.com/prosopo/chaddy
 
 go 1.21.0
 
