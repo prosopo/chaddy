@@ -52,13 +52,20 @@ func (h *ClientHelloHandler) UnmarshalCaddyfile(_ *caddyfile.Dispenser) error {
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler
 func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
-	if req.TLS != nil && req.TLS.HandshakeComplete && req.ProtoMajor < 3 { // Ensure this uses TLS and < HTTP/3
-		// Extract the SessionID from the TLS connection state
-		sessionID := req.TLS.SessionID
+	if req.TLS.HandshakeComplete && req.ProtoMajor < 3 { // Ensure this uses TLS and < HTTP/3
 		var cacheKey string
-		if sessionID != nil && len(sessionID) > 0 {
-			h.log.Debug("SessionID found", zap.String("addr", req.RemoteAddr), zap.String("session_id", base64.StdEncoding.EncodeToString(sessionID)))
-			cacheKey = base64.StdEncoding.EncodeToString(sessionID)
+		if req.TLS != nil {
+			// Extract the SessionID from the TLS connection state
+			sessionID := req.TLS.TLSUnique
+
+			if sessionID != nil && len(sessionID) > 0 {
+				h.log.Debug("SessionID found", zap.String("addr", req.RemoteAddr), zap.String("session_id", base64.StdEncoding.EncodeToString(sessionID)))
+				cacheKey = base64.StdEncoding.EncodeToString(sessionID)
+			} else {
+				h.log.Debug("No SessionID found", zap.String("addr", req.RemoteAddr))
+				cacheKey = req.RemoteAddr
+			}
+
 		} else {
 			h.log.Debug("No SessionID found", zap.String("addr", req.RemoteAddr))
 			cacheKey = req.RemoteAddr

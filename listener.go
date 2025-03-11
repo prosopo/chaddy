@@ -104,7 +104,7 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 	var cacheKey string
 	if sessionID != nil {
 		cacheKey := string(sessionID)
-		l.log.Debug("Extracted SessionID", zap.String("session_id", base64.StdEncoding.EncodeToString(cacheKey)))
+		l.log.Debug("Extracted SessionID", zap.String("session_id", cacheKey))
 	} else {
 		cacheKey = conn.RemoteAddr().String()
 	}
