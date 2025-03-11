@@ -31,9 +31,11 @@ func (c *Cache) Provision(_ caddy.Context) error {
 	return nil
 }
 
-func (c *Cache) SetClientHello(addr string, encoded string) error {
+func (c *Cache) SetClientHello(sessionIDBytes []byte, encoded string) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
+	var sessionID = string(sessionIDBytes)
 
 	// Set an expiration time for the cache (e.g., 1 hour)
     expiration := time.Now().Add(1 * time.Hour).Unix()
@@ -47,7 +49,7 @@ func (c *Cache) SetClientHello(addr string, encoded string) error {
         }
     }
 
-	c.clientHellos[addr] = CacheEntry{
+	c.clientHellos[sessionID] = CacheEntry{
         Value:      encoded,
         Expiration: expiration,
     }

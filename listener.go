@@ -98,7 +98,14 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 	}
 
 	l.log.Debug("Cache Size", zap.Int("size", len(l.cache.clientHellos)))
-	if err := l.cache.SetClientHello(conn.RemoteAddr().String(), encoded); err != nil {
+
+	// Extract the SessionID from the ClientHello (this assumes `ReadClientHello` parses the ClientHello structure)
+	sessionID := extractSessionIDFromClientHello(raw)
+	if sessionID != nil {
+		l.log.Debug("Extracted SessionID", zap.String("session_id", base64.StdEncoding.EncodeToString(sessionID)))
+	}
+
+	if err := l.cache.SetClientHello(sessionID, encoded); err != nil {
 		l.log.Error("Failed to set record in ClientHello cache",
 			zap.String("addr", conn.RemoteAddr().String()),
 			zap.String("client_hello", encoded),
@@ -113,6 +120,32 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 		l.cache,
 		l.log,
 	}, raw)
+}
+
+// Function to extract the SessionID from the ClientHello (assuming raw contains the ClientHello message)
+func extractSessionIDFromClientHello(clientHello []byte) []byte {
+	// This is where you would parse the ClientHello message and extract the SessionID
+	// A typical ClientHello structure has a SessionID field at a specific offset in the raw bytes
+	// Depending on how your ReadClientHello function works, you'd need to parse it accordingly.
+	// Here's a placeholder implementation.
+
+	// For example:
+	// The SessionID typically follows the protocol version and random data in the ClientHello message.
+	// You can decode it based on the standard TLS protocol message format.
+
+	if len(clientHello) < 38 { // ClientHello has a minimum length
+		return nil
+	}
+
+	// SessionID is generally located at the offset of 38 bytes in the ClientHello
+	// (this might need adjustment depending on your exact `ReadClientHello` parsing implementation)
+	sessionIDLen := int(clientHello[38]) // SessionID length is at byte 38
+	if len(clientHello) < 39+sessionIDLen {
+		return nil
+	}
+    // SessionID is located at byte 39
+	return clientHello[39 : 39+sessionIDLen]
+
 }
 
 // Close implements net.Conn
