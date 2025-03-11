@@ -2,8 +2,8 @@ package caddy_clienthello
 
 import (
 	"sync"
-
 	"github.com/caddyserver/caddy/v2"
+	"time"
 )
 
 const (
@@ -14,13 +14,20 @@ func init() {
 	caddy.RegisterModule(Cache{})
 }
 
+const MaxCacheSize = 1000 // Maximum number of entries in the cache
+
+type CacheEntry struct {
+    Value      string
+    Expiration int64
+}
+
 type Cache struct {
-	clientHellos map[string]string
+	clientHellos map[string]CacheEntry
 	lock         sync.RWMutex
 }
 
 func (c *Cache) Provision(_ caddy.Context) error {
-	c.clientHellos = make(map[string]string)
+	c.clientHellos = make(map[string]CacheEntry)
 	return nil
 }
 
@@ -28,7 +35,23 @@ func (c *Cache) SetClientHello(addr string, encoded string) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	c.clientHellos[addr] = encoded
+	// Set an expiration time for the cache (e.g., 1 hour)
+    expiration := time.Now().Add(1 * time.Hour).Unix()
+
+	// Check cache size and evict if needed
+    if len(c.clientHellos) >= MaxCacheSize {
+        // Eviction strategy (e.g., remove the first element or an LRU item)
+        for key := range c.clientHellos {
+            delete(c.clientHellos, key)
+            break
+        }
+    }
+
+	c.clientHellos[addr] = CacheEntry{
+        Value:      encoded,
+        Expiration: expiration,
+    }
+
 	return nil
 }
 
@@ -42,11 +65,17 @@ func (c *Cache) GetClientHello(addr string) *string {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 
-	if data, found := c.clientHellos[addr]; found {
-		return &data
-	} else {
-		return nil
+    entry, found := c.clientHellos[addr]
+    if !found {
+        return nil // Entry doesn't exist
+    }
+
+	if entry.Expiration < time.Now().Unix() {
+		c.ClearClientHello(addr)
+		return nil // Entry expired
 	}
+
+	return &entry.Value
 }
 
 // CaddyModule implements caddy.Module

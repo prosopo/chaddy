@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"strconv"
-
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"go.uber.org/zap"
@@ -105,6 +104,7 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 			zap.Error(err),
 		)
 	} else {
+		l.log.Info("Cache Size", zap.Int("size", len(l.cache.clientHellos)))
 		l.log.Debug("Cached ClientHello for connection", zap.String("addr", conn.RemoteAddr().String()))
 	}
 
