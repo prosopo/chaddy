@@ -6,10 +6,10 @@ import (
 	"errors"
 	"io"
 	"net"
-	"strconv"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"go.uber.org/zap"
+	"net/http"
 )
 
 func init() {
@@ -17,22 +17,18 @@ func init() {
 }
 
 type ClientHelloListenerWrapper struct {
-	cache  *Cache
-	config *Config
-	log    *zap.Logger
+	log *zap.Logger
 }
 
 type clientHelloListener struct {
 	net.Listener
-	cache  *Cache
-	config *Config
-	log    *zap.Logger
+	log *zap.Logger
 }
 
 type clientHelloConnListener struct {
 	net.Conn
-	cache *Cache
-	log   *zap.Logger
+	log         *zap.Logger
+	clientHello string
 }
 
 // CaddyModule implements caddy.Module
@@ -44,18 +40,6 @@ func (ClientHelloListenerWrapper) CaddyModule() caddy.ModuleInfo {
 }
 
 func (l *ClientHelloListenerWrapper) Provision(ctx caddy.Context) error {
-	app, err := ctx.App(CacheAppId)
-	if err != nil {
-		return err
-	}
-	l.cache = app.(*Cache)
-
-	app, err = ctx.App(ConfigAppId)
-	if err != nil {
-		return err
-	}
-	l.config = app.(*Config)
-
 	l.log = ctx.Logger(l)
 	return nil
 }
@@ -64,15 +48,12 @@ func (l *ClientHelloListenerWrapper) Provision(ctx caddy.Context) error {
 func (l *ClientHelloListenerWrapper) WrapListener(ln net.Listener) net.Listener {
 	return &clientHelloListener{
 		ln,
-		l.cache,
-		l.config,
 		l.log,
 	}
 }
 
 // UnmarshalCaddyfile implements caddyfile.Unmarshaler
 func (l *ClientHelloListenerWrapper) UnmarshalCaddyfile(_ *caddyfile.Dispenser) error {
-	// no-op impl
 	return nil
 }
 
@@ -83,8 +64,7 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 		return conn, err
 	}
 
-	raw, err := ReadClientHello(l.config, conn)
-
+	raw, err := ReadClientHello(conn)
 	if err != nil && err.Error() != "ClientHello exceeds maximum size, treating as invalid" {
 		l.log.Debug("Failed to read ClientHello", zap.String("addr", conn.RemoteAddr().String()), zap.Error(err))
 		return RewindConn(conn, raw)
@@ -97,56 +77,42 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 		encoded = base64.StdEncoding.EncodeToString(raw)
 	}
 
-	l.log.Debug("Cache Size", zap.Int("size", len(l.cache.clientHellos)))
-	if err := l.cache.SetClientHello(conn.RemoteAddr().String(), encoded); err != nil {
-		l.log.Error("Failed to set record in ClientHello cache",
-			zap.String("addr", conn.RemoteAddr().String()),
-			zap.String("client_hello", encoded),
-			zap.Error(err),
-		)
-	} else {
-		l.log.Debug("Cached ClientHello for connection", zap.String("addr", conn.RemoteAddr().String()))
-	}
+	l.log.Debug("Read ClientHello for connection", zap.String("addr", conn.RemoteAddr().String()))
 
 	return RewindConn(&clientHelloConnListener{
-		conn,
-		l.cache,
-		l.log,
+		Conn:        conn,
+		log:         l.log,
+		clientHello: encoded,
 	}, raw)
+}
+
+// ServeHTTP injects the ClientHello as a request header
+func (l *clientHelloConnListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if l.clientHello != "" {
+		r.Header.Set("X-ClientHello", l.clientHello)
+	}
+	http.DefaultServeMux.ServeHTTP(w, r)
 }
 
 // Close implements net.Conn
 func (l *clientHelloConnListener) Close() error {
-	addr := l.Conn.RemoteAddr().String()
-
-	l.cache.ClearClientHello(addr)
-	l.log.Debug("Clearing ClientHello for connection", zap.String("addr", addr))
-
 	return l.Conn.Close()
 }
 
-// ReadClientHello reads as much of a ClientHello as possible and returns it.
-// If any error was encountered, then an error is returned as well and the raw bytes are not a full ClientHello.
-func ReadClientHello(config *Config, r io.Reader) (raw []byte, err error) {
-	// Based on https://github.com/gaukas/clienthellod/blob/7cce34b88b314256c8759998f6192860f6f6ede5/clienthello.go#L68
-
-	// Read a TLS record
-	// Read exactly 5 bytes from the reader
+func ReadClientHello(r io.Reader) (raw []byte, err error) {
 	raw = make([]byte, 5)
 	if _, err = io.ReadFull(r, raw); err != nil {
 		return
 	}
 
-	// Check if the first byte is 0x16 (TLS Handshake)
 	if raw[0] != 0x16 {
 		err = errors.New("not a TLS handshake record")
 		return
 	}
 
-	// Read ClientHello length
 	length := binary.BigEndian.Uint16(raw[3:5])
-	if length > config.MaxClientHelloSize {
-		err = errors.New("ClientHello exceeds maximum size, treating as invalid; size=" + strconv.Itoa(int(length)))
+	if length > 16384 {
+		err = errors.New("ClientHello exceeds maximum size, treating as invalid")
 		return
 	}
 
