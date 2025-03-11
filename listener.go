@@ -97,6 +97,7 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 		encoded = base64.StdEncoding.EncodeToString(raw)
 	}
 
+	l.log.Debug("Cache Size", zap.Int("size", len(l.cache.clientHellos)))
 	if err := l.cache.SetClientHello(conn.RemoteAddr().String(), encoded); err != nil {
 		l.log.Error("Failed to set record in ClientHello cache",
 			zap.String("addr", conn.RemoteAddr().String()),
@@ -104,7 +105,6 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 			zap.Error(err),
 		)
 	} else {
-		l.log.Info("Cache Size", zap.Int("size", len(l.cache.clientHellos)))
 		l.log.Debug("Cached ClientHello for connection", zap.String("addr", conn.RemoteAddr().String()))
 	}
 
