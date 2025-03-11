@@ -101,15 +101,15 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 
 	// Extract the SessionID from the ClientHello (this assumes `ReadClientHello` parses the ClientHello structure)
 	sessionID := extractSessionIDFromClientHello(raw)
-	var cacheKey string
+	var extractedCacheKey string
 	if sessionID != nil {
 		cacheKey := base64.StdEncoding.EncodeToString(sessionID)
 		l.log.Debug("Extracted SessionID", zap.String("session_id", cacheKey))
 	} else {
-		cacheKey = conn.RemoteAddr().String()
+		extractedCacheKey = conn.RemoteAddr().String()
 	}
 
-	if err := l.cache.SetClientHello(cacheKey, encoded); err != nil {
+	if err := l.cache.SetClientHello(extractedCacheKey, encoded); err != nil {
 		l.log.Error("Failed to set record in ClientHello cache",
 			zap.String("addr", conn.RemoteAddr().String()),
 			zap.String("client_hello", encoded),

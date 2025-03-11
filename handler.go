@@ -59,8 +59,9 @@ func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request
 			sessionID := req.TLS.TLSUnique
 
 			if sessionID != nil && len(sessionID) > 0 {
-				h.log.Debug("SessionID found", zap.String("addr", req.RemoteAddr), zap.String("session_id", base64.StdEncoding.EncodeToString(sessionID)))
 				cacheKey = base64.StdEncoding.EncodeToString(sessionID)
+				h.log.Debug("SessionID found", zap.String("addr", req.RemoteAddr), zap.String("session_id", cacheKey))
+
 			} else {
 				h.log.Debug("No SessionID found", zap.String("addr", req.RemoteAddr))
 				cacheKey = req.RemoteAddr
