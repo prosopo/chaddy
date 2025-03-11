@@ -69,18 +69,17 @@ func (c *Config) Provision(ctx caddy.Context) error {
 	}
 
 	// Disable TLS session resumption via session tickets
-	app, err := ctx.App("tls")
-	if err != nil {
-		return err
-	}
-	tlsApp := app.(*caddytls.TLS)
-	if tlsApp.SessionTickets == nil {
-		tlsApp.SessionTickets = new(caddytls.SessionTicketService)
-	}
-	tlsApp.SessionTickets.Disabled = true
-	ctx.Logger(c).Debug("adjusted config: disabled TLS session tickets")
-
-	return nil
+	//app, err := ctx.App("tls")
+	//if err != nil {
+	//	return err
+	//}
+	//tlsApp := app.(*caddytls.TLS)
+	//if tlsApp.SessionTickets == nil {
+	//	tlsApp.SessionTickets = new(caddytls.SessionTicketService)
+	//}
+	//tlsApp.SessionTickets.Disabled = true
+	//ctx.Logger(c).Debug("adjusted config: disabled TLS session tickets")
+	//return nil
 }
 
 // Start implements caddy.App
