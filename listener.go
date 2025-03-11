@@ -4,12 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
-	"io"
-	"net"
-	"strconv"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"go.uber.org/zap"
+	"io"
+	"net"
+	"strconv"
 )
 
 func init() {
@@ -101,18 +101,22 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 
 	// Extract the SessionID from the ClientHello (this assumes `ReadClientHello` parses the ClientHello structure)
 	sessionID := extractSessionIDFromClientHello(raw)
+	var cacheKey string
 	if sessionID != nil {
-		l.log.Debug("Extracted SessionID", zap.String("session_id", base64.StdEncoding.EncodeToString(sessionID)))
+		cacheKey := string(sessionID)
+		l.log.Debug("Extracted SessionID", zap.String("session_id", base64.StdEncoding.EncodeToString(cacheKey)))
+	} else {
+		cacheKey = conn.RemoteAddr().String()
 	}
 
-	if err := l.cache.SetClientHello(sessionID, encoded); err != nil {
+	if err := l.cache.SetClientHello(cacheKey, encoded); err != nil {
 		l.log.Error("Failed to set record in ClientHello cache",
 			zap.String("addr", conn.RemoteAddr().String()),
 			zap.String("client_hello", encoded),
 			zap.Error(err),
 		)
 	} else {
-		l.log.Debug("Cached ClientHello for connection", zap.String("addr", conn.RemoteAddr().String()), zap.String("sessionID", base64.StdEncoding.EncodeToString(sessionID)))
+		l.log.Debug("Cached ClientHello for connection", zap.String("addr", conn.RemoteAddr().String()))
 
 	}
 
@@ -144,7 +148,7 @@ func extractSessionIDFromClientHello(clientHello []byte) []byte {
 	if len(clientHello) < 39+sessionIDLen {
 		return nil
 	}
-    // SessionID is located at byte 39
+	// SessionID is located at byte 39
 	return clientHello[39 : 39+sessionIDLen]
 
 }

@@ -1,6 +1,7 @@
 package caddy_clienthello
 
 import (
+	"encoding/base64"
 	"net/http"
 
 	"github.com/caddyserver/caddy/v2"
@@ -51,9 +52,19 @@ func (h *ClientHelloHandler) UnmarshalCaddyfile(_ *caddyfile.Dispenser) error {
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler
 func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
-	if req.TLS.HandshakeComplete && req.ProtoMajor < 3 { // Check that this uses TLS and < HTTP/3
-		clientHello := h.cache.GetClientHello(req.RemoteAddr) // RemoteAddr is unique per TLS connection
+	if req.TLS != nil && req.TLS.HandshakeComplete && req.ProtoMajor < 3 { // Ensure this uses TLS and < HTTP/3
+		// Extract the SessionID from the TLS connection state
+		sessionID := req.TLS.SessionID
+		var cacheKey string
+		if sessionID != nil && len(sessionID) > 0 {
+			h.log.Debug("SessionID found", zap.String("addr", req.RemoteAddr), zap.String("session_id", base64.StdEncoding.EncodeToString(sessionID)))
+			cacheKey = base64.StdEncoding.EncodeToString(sessionID)
+		} else {
+			h.log.Debug("No SessionID found", zap.String("addr", req.RemoteAddr))
+			cacheKey = req.RemoteAddr
+		}
 
+		clientHello := h.cache.GetClientHello(cacheKey) // Retrieve ClientHello from cache
 		if clientHello == nil {
 			h.log.Error("ClientHello missing from cache", zap.String("addr", req.RemoteAddr))
 		} else {
