@@ -112,7 +112,8 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 			zap.Error(err),
 		)
 	} else {
-		l.log.Debug("Cached ClientHello for connection", zap.String("addr", conn.RemoteAddr().String()))
+		l.log.Debug("Cached ClientHello for connection", zap.String("addr", conn.RemoteAddr().String()), zap.String("sessionID", base64.StdEncoding.EncodeToString(sessionID)))
+
 	}
 
 	return RewindConn(&clientHelloConnListener{
