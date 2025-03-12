@@ -71,6 +71,8 @@ func (c *Cache) GetClientHello(addr string) *string {
     }
 
 	if entry.Expiration < time.Now().Unix() {
+		// unlock the read lock bc clearing client hello requires a write lock
+		c.lock.RUnlock()
 		c.ClearClientHello(addr)
 		return nil // Entry expired
 	}
