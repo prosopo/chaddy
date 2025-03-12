@@ -63,16 +63,15 @@ func (c *Cache) ClearClientHello(addr string) {
 
 func (c *Cache) GetClientHello(addr string) *string {
 	c.lock.RLock()
-	defer c.lock.RUnlock()
-
     entry, found := c.clientHellos[addr]
+	// read lock no longer needed, clear it to avoid deadlock with clearClientHello later on
+	c.lock.RUnlock()
+
     if !found {
         return nil // Entry doesn't exist
     }
 
 	if entry.Expiration < time.Now().Unix() {
-		// unlock the read lock bc clearing client hello requires a write lock
-		c.lock.RUnlock()
 		c.ClearClientHello(addr)
 		return nil // Entry expired
 	}
