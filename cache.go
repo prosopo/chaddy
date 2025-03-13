@@ -38,15 +38,6 @@ func (c *Cache) SetClientHello(addr string, encoded string) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	// Check cache size and evict if needed
-    if len(c.clientHellos) >= MaxCacheSize {
-        // Eviction strategy (e.g., remove the first element or an LRU item)
-        for key := range c.clientHellos {
-            delete(c.clientHellos, key)
-            break
-        }
-    }
-
 	c.clientHellos[addr] = CacheEntry{
         Value:      encoded,
     }
