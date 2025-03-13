@@ -77,11 +77,6 @@ func (c *Cache) GetClientHello(addr string) *string {
         return nil // Entry doesn't exist
     }
 
-	if entry.Expiration < time.Now().Unix() {
-		c.ClearClientHello(addr)
-		return nil // Entry expired
-	}
-
 	return &entry.Value
 }
 
