@@ -84,6 +84,7 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 		return conn, err
 	}
 
+	// when a connection is first init'd, read the client hello
 	raw, err := ReadClientHello(l.config, conn)
 
 	if err != nil && err.Error() != "ClientHello exceeds maximum size, treating as invalid" {
@@ -97,7 +98,10 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 	} else {
 		encoded = base64.StdEncoding.EncodeToString(raw)
 	}
-	// l.log.Debug("Cache Size", zap.Int("size", len(l.cache.clientHellos)))
+	// record the client hello against the remote addr
+	// the remote addr is the clients IP + an ephemeral port
+	// this is unique per connection, so we can cache client hello's keyed by this
+	// note that even with NAT/CGNAT, the remote addr will be unique per connection
 	if err := l.cache.SetClientHello(conn.RemoteAddr().String(), encoded); err != nil {
 		l.log.Error("Failed to set record in ClientHello cache",
 			zap.String("addr", conn.RemoteAddr().String()),
@@ -119,6 +123,8 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 func (l *clientHelloConnListener) Close() error {
 	addr := l.Conn.RemoteAddr().String()
 
+	// clear the client hello on connection closed
+	// the connection is closed, so client hello will no longer be needed as connection cannot be used going forwards
 	l.cache.ClearClientHello(addr)
 
 	return l.Conn.Close()
