@@ -40,6 +40,9 @@ func (h *ClientHelloHandler) Provision(ctx caddy.Context) error {
 
 	h.cache = a.(*Cache)
 	h.log = ctx.Logger(h)
+
+	h.log.Info(("chaddy handler provisioned"))
+
 	return nil
 }
 

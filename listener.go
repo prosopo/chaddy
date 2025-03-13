@@ -58,6 +58,9 @@ func (l *ClientHelloListenerWrapper) Provision(ctx caddy.Context) error {
 	l.config = app.(*Config)
 
 	l.log = ctx.Logger(l)
+
+	l.log.Info(("chaddy listener provisioned"))
+
 	return nil
 }
 
