@@ -4,6 +4,9 @@ import (
 	"sync"
 	"github.com/caddyserver/caddy/v2"
 	"time"
+
+	"github.com/caddyserver/caddy/v2"
+	"go.uber.org/zap"
 )
 
 const (
@@ -24,10 +27,12 @@ type CacheEntry struct {
 type Cache struct {
 	clientHellos map[string]CacheEntry
 	lock         sync.RWMutex
+	logger *zap.Logger
 }
 
-func (c *Cache) Provision(_ caddy.Context) error {
+func (c *Cache) Provision(ctx caddy.Context) error {
 	c.clientHellos = make(map[string]CacheEntry)
+	c.logger = ctx.Logger(c)
 	return nil
 }
 
@@ -56,12 +61,14 @@ func (c *Cache) SetClientHello(addr string, encoded string) error {
 }
 
 func (c *Cache) ClearClientHello(addr string) {
+	c.logger.Debug("ClearClientHello", zap.String("addr", addr))
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	delete(c.clientHellos, addr)
 }
 
 func (c *Cache) GetClientHello(addr string) *string {
+	c.logger.Debug("GetClientHello", zap.String("addr", addr))
 	c.lock.RLock()
     entry, found := c.clientHellos[addr]
 	// read lock no longer needed, clear it to avoid deadlock with clearClientHello later on
