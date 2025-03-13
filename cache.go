@@ -37,6 +37,7 @@ func (c *Cache) Provision(ctx caddy.Context) error {
 }
 
 func (c *Cache) SetClientHello(addr string, encoded string) error {
+	c.logger.Debug("SetClientHello", zap.String("addr", addr), zap.String("encoded", encoded))
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
