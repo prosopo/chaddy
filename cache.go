@@ -15,8 +15,6 @@ func init() {
 	caddy.RegisterModule(Cache{})
 }
 
-const MaxCacheSize = 1000 // Maximum number of entries in the cache
-
 type CacheEntry struct {
 	Value string
 }
