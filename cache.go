@@ -70,9 +70,8 @@ func (c *Cache) ClearClientHello(addr string) {
 func (c *Cache) GetClientHello(addr string) *string {
 	c.logger.Debug("GetClientHello", zap.String("addr", addr))
 	c.lock.RLock()
+	defer c.lock.RUnlock()
     entry, found := c.clientHellos[addr]
-	// read lock no longer needed, clear it to avoid deadlock with clearClientHello later on
-	c.lock.RUnlock()
 
     if !found {
         return nil // Entry doesn't exist
