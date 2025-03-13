@@ -88,7 +88,7 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 	raw, err := ReadClientHello(l.config, conn)
 
 	if err != nil && err.Error() != "ClientHello exceeds maximum size, treating as invalid" {
-		l.log.Debug("Failed to read ClientHello", zap.String("addr", conn.RemoteAddr().String()), zap.Error(err))
+		l.log.Error("Failed to read ClientHello", zap.String("addr", conn.RemoteAddr().String()), zap.Error(err))
 		return RewindConn(conn, raw)
 	}
 
