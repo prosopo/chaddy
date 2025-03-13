@@ -51,15 +51,18 @@ func (h *ClientHelloHandler) UnmarshalCaddyfile(_ *caddyfile.Dispenser) error {
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler
 func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
+	h.log.Debug("ClientHelloHandler: ServeHTTP")
+
 	if req.TLS.HandshakeComplete && req.ProtoMajor < 3 { // Check that this uses TLS and < HTTP/3
 		clientHello := h.cache.GetClientHello(req.RemoteAddr) // RemoteAddr is unique per TLS connection
 
 		if clientHello == nil {
 			h.log.Error("ClientHello missing from cache", zap.String("addr", req.RemoteAddr))
 		} else {
-			h.log.Debug("Adding encoded ClientHello to request", zap.String("addr", req.RemoteAddr))
+			h.log.Debug("Adding encoded ClientHello to request", zap.String("addr", req.RemoteAddr), zap.String("client_hello", *clientHello))
 			req.Header.Add("X-TLS-ClientHello", *clientHello)
 		}
+
 	}
 
 	return next.ServeHTTP(rw, req)

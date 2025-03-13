@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"go.uber.org/zap"
@@ -96,8 +97,7 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 	} else {
 		encoded = base64.StdEncoding.EncodeToString(raw)
 	}
-
-	l.log.Debug("Cache Size", zap.Int("size", len(l.cache.clientHellos)))
+	// l.log.Debug("Cache Size", zap.Int("size", len(l.cache.clientHellos)))
 	if err := l.cache.SetClientHello(conn.RemoteAddr().String(), encoded); err != nil {
 		l.log.Error("Failed to set record in ClientHello cache",
 			zap.String("addr", conn.RemoteAddr().String()),
@@ -120,7 +120,6 @@ func (l *clientHelloConnListener) Close() error {
 	addr := l.Conn.RemoteAddr().String()
 
 	l.cache.ClearClientHello(addr)
-	l.log.Debug("Clearing ClientHello for connection", zap.String("addr", addr))
 
 	return l.Conn.Close()
 }
@@ -161,3 +160,4 @@ var (
 	_ caddy.ListenerWrapper = (*ClientHelloListenerWrapper)(nil)
 	_ caddyfile.Unmarshaler = (*ClientHelloListenerWrapper)(nil)
 )
+
