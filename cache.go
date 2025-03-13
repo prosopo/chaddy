@@ -41,6 +41,8 @@ func (c *Cache) SetClientHello(addr string, encoded string) error {
 	c.clientHellos[addr] = CacheEntry{
         Value:      encoded,
     }
+
+	c.logger.Info("ClientHello cache size", zap.Int("size", len(c.clientHellos)))
 	
 	return nil
 }
@@ -50,6 +52,7 @@ func (c *Cache) ClearClientHello(addr string) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	delete(c.clientHellos, addr)
+	c.logger.Info("ClientHello cache size", zap.Int("size", len(c.clientHellos)))
 }
 
 func (c *Cache) GetClientHello(addr string) *string {
