@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"go.uber.org/zap"
@@ -57,6 +58,9 @@ func (l *ClientHelloListenerWrapper) Provision(ctx caddy.Context) error {
 	l.config = app.(*Config)
 
 	l.log = ctx.Logger(l)
+
+	l.log.Info(("chaddy listener provisioned"))
+
 	return nil
 }
 
@@ -83,10 +87,11 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 		return conn, err
 	}
 
+	// when a connection is first init'd, read the client hello
 	raw, err := ReadClientHello(l.config, conn)
 
 	if err != nil && err.Error() != "ClientHello exceeds maximum size, treating as invalid" {
-		l.log.Debug("Failed to read ClientHello", zap.String("addr", conn.RemoteAddr().String()), zap.Error(err))
+		l.log.Error("Failed to read ClientHello", zap.String("addr", conn.RemoteAddr().String()), zap.Error(err))
 		return RewindConn(conn, raw)
 	}
 
@@ -96,8 +101,10 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 	} else {
 		encoded = base64.StdEncoding.EncodeToString(raw)
 	}
-
-	l.log.Debug("Cache Size", zap.Int("size", len(l.cache.clientHellos)))
+	// record the client hello against the remote addr
+	// the remote addr is the clients IP + an ephemeral port
+	// this is unique per connection, so we can cache client hello's keyed by this
+	// note that even with NAT/CGNAT, the remote addr will be unique per connection
 	if err := l.cache.SetClientHello(conn.RemoteAddr().String(), encoded); err != nil {
 		l.log.Error("Failed to set record in ClientHello cache",
 			zap.String("addr", conn.RemoteAddr().String()),
@@ -119,8 +126,9 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 func (l *clientHelloConnListener) Close() error {
 	addr := l.Conn.RemoteAddr().String()
 
+	// clear the client hello on connection closed
+	// the connection is closed, so client hello will no longer be needed as connection cannot be used going forwards
 	l.cache.ClearClientHello(addr)
-	l.log.Debug("Clearing ClientHello for connection", zap.String("addr", addr))
 
 	return l.Conn.Close()
 }
@@ -161,3 +169,4 @@ var (
 	_ caddy.ListenerWrapper = (*ClientHelloListenerWrapper)(nil)
 	_ caddyfile.Unmarshaler = (*ClientHelloListenerWrapper)(nil)
 )
+
