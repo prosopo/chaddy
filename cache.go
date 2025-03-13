@@ -2,8 +2,6 @@ package caddy_clienthello
 
 import (
 	"sync"
-	"github.com/caddyserver/caddy/v2"
-	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
@@ -20,8 +18,7 @@ func init() {
 const MaxCacheSize = 1000 // Maximum number of entries in the cache
 
 type CacheEntry struct {
-    Value      string
-    Expiration int64
+	Value string
 }
 
 type Cache struct {
@@ -41,9 +38,6 @@ func (c *Cache) SetClientHello(addr string, encoded string) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	// Set an expiration time for the cache (e.g., 1 hour)
-    expiration := time.Now().Add(1 * time.Hour).Unix()
-
 	// Check cache size and evict if needed
     if len(c.clientHellos) >= MaxCacheSize {
         // Eviction strategy (e.g., remove the first element or an LRU item)
@@ -55,9 +49,8 @@ func (c *Cache) SetClientHello(addr string, encoded string) error {
 
 	c.clientHellos[addr] = CacheEntry{
         Value:      encoded,
-        Expiration: expiration,
     }
-
+	
 	return nil
 }
 
