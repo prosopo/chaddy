@@ -31,7 +31,7 @@ func (c *Cache) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-func (c *Cache) SetClientHello(addr string, encoded string) error {
+func (c *Cache) SetClientHello(addr string, encoded string) {
 	c.logger.Debug("SetClientHello", zap.String("addr", addr), zap.String("encoded", encoded))
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -41,8 +41,6 @@ func (c *Cache) SetClientHello(addr string, encoded string) error {
     }
 
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
-	
-	return nil
 }
 
 func (c *Cache) ClearClientHello(addr string) {
