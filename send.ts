@@ -27,9 +27,12 @@ const payloads: {
     "1B": [0x16], // TLS Record Header only
     "notClientHello": [
         0x00 // not a tls handshake type
-    ]
+    ],
+    "max": [0x16, 0x03, 0x01, 0xff, 0xff - 5, ...Array(Math.pow(2, 16) - 5).fill(0x00)],
+    "overflow": [0x16, 0x03, 0x01, 0xff, 0xff, ...Array(99999).fill(0x00)],
 }
 
+// console.log('max len', payloads['max'].length);
 const server = process.argv[2] || "";
 const payload = payloads[process.argv[3] || ''];
 if (!payload) {
