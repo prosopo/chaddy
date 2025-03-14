@@ -21,7 +21,7 @@ type ClientHelloConnWrapper struct {
 // NewClientHelloConnWrapper creates a new wrapper
 func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger) *ClientHelloConnWrapper {
 	// create a buffered reader for the conn
-	bufferedReader := bufio.NewReader(conn)
+	bufferedReader := bufio.NewReaderSize(conn, 65536) // 64KB buffer, the max size of a TLS record
 	return &ClientHelloConnWrapper{
 		Conn:   conn,
 		log:    log,
@@ -71,6 +71,7 @@ func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 	// byte 3-4: length of the handshake message (big endian)
 	len := int(bytes[3])<<8 | int(bytes[4])
 
+	r.log.Debug("Client hello length", zap.Int("len", len))
 	// peek the full client hello
 	bytes, err = r.bufferedReader.Peek(len + 5)
 	if err != nil {
