@@ -2,8 +2,9 @@ package caddy_clienthello
 
 import (
 	"sync"
+
 	"github.com/caddyserver/caddy/v2"
-	"time"
+	"go.uber.org/zap"
 )
 
 const (
@@ -14,66 +15,51 @@ func init() {
 	caddy.RegisterModule(Cache{})
 }
 
-const MaxCacheSize = 1000 // Maximum number of entries in the cache
-
 type CacheEntry struct {
-    Value      string
-    Expiration int64
+	Value string
 }
 
 type Cache struct {
 	clientHellos map[string]CacheEntry
 	lock         sync.RWMutex
+	logger *zap.Logger
 }
 
-func (c *Cache) Provision(_ caddy.Context) error {
+func (c *Cache) Provision(ctx caddy.Context) error {
 	c.clientHellos = make(map[string]CacheEntry)
+	c.logger = ctx.Logger(c)
 	return nil
 }
 
-func (c *Cache) SetClientHello(addr string, encoded string) error {
+func (c *Cache) SetClientHello(addr string, encoded string) {
+	c.logger.Debug("SetClientHello", zap.String("addr", addr), zap.String("encoded", encoded))
 	c.lock.Lock()
 	defer c.lock.Unlock()
-
-	// Set an expiration time for the cache (e.g., 1 hour)
-    expiration := time.Now().Add(1 * time.Hour).Unix()
-
-	// Check cache size and evict if needed
-    if len(c.clientHellos) >= MaxCacheSize {
-        // Eviction strategy (e.g., remove the first element or an LRU item)
-        for key := range c.clientHellos {
-            delete(c.clientHellos, key)
-            break
-        }
-    }
 
 	c.clientHellos[addr] = CacheEntry{
         Value:      encoded,
-        Expiration: expiration,
     }
 
-	return nil
+	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
 
 func (c *Cache) ClearClientHello(addr string) {
+	c.logger.Debug("ClearClientHello", zap.String("addr", addr))
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	delete(c.clientHellos, addr)
+	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
 
 func (c *Cache) GetClientHello(addr string) *string {
+	c.logger.Debug("GetClientHello", zap.String("addr", addr))
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-
     entry, found := c.clientHellos[addr]
+
     if !found {
         return nil // Entry doesn't exist
     }
-
-	if entry.Expiration < time.Now().Unix() {
-		c.ClearClientHello(addr)
-		return nil // Entry expired
-	}
 
 	return &entry.Value
 }

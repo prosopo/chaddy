@@ -2,6 +2,17 @@
 
 A caddy plugin to forward TLS `ClientHello` packets on requests as a header.
 
+## Building locally
+```bash
+CGO_ENABLED=1 xcaddy build \
+    --with github.com/mholt/caddy-ratelimit \
+    --with github.com/prosopo/chaddy=/path/to/chaddy/repo \
+```
+to build caddy, which will output a bin file in your cwd. Then
+```bash
+./caddy run --config ./path/to/the/Caddyfile
+```
+
 ## Building with xcaddy
 
 ```shell
