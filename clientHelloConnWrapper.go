@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"net"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -16,10 +17,11 @@ type ClientHelloConnWrapper struct {
 	bufferedReader *bufio.Reader
 	done   bool
 	cache *Cache
+	connectionStart time.Time // when listener.Accept() returned — plumbed in so Read can compute tcp_to_chello_ms
 }
 
 // NewClientHelloConnWrapper creates a new wrapper
-func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger) *ClientHelloConnWrapper {
+func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger, connectionStart time.Time) *ClientHelloConnWrapper {
 	// create a buffered reader for the conn
 	bufferedReader := bufio.NewReaderSize(conn, 65536) // 64KB buffer, the max size of a TLS record
 	return &ClientHelloConnWrapper{
@@ -28,6 +30,7 @@ func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger) *Cl
 		bufferedReader: bufferedReader,
 		done:   false, // we haven't read the client hello yet
 		cache: cache,
+		connectionStart: connectionStart,
 	}
 }
 
@@ -81,9 +84,18 @@ func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 
 	// convert the client hello bytes to base64
 	encoded := base64.StdEncoding.EncodeToString(bytes)
-	
+
+	// t1: full CH bytes have been peeked. Delta from t0 (connectionStart)
+	// is inflated by the entire client-to-exit RTT chain when a CONNECT
+	// proxy sits in the path, because CH bytes only reach the exit
+	// box's TCP stack after traversing every hop. Same signal Bumblebee
+	// captures via ConnectionMetadata.tcp_to_chello_ms.
+	clientHelloReceived := time.Now()
+
 	// record client hello in cache
-	r.cache.SetClientHello(r.Conn.RemoteAddr().String(), encoded)
+	addr := r.Conn.RemoteAddr().String()
+	r.cache.SetClientHello(addr, encoded)
+	r.cache.SetTiming(addr, r.connectionStart, clientHelloReceived)
 
 	// delegate the original read call to the buffered reader
 	return r.bufferedReader.Read(b)

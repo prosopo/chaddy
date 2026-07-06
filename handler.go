@@ -2,6 +2,8 @@ package caddy_clienthello
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -65,6 +67,37 @@ func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request
 		} else {
 			h.log.Debug("Adding encoded ClientHello to request", zap.String("addr", req.RemoteAddr), zap.String("client_hello", *clientHello))
 			req.Header.Add("X-TLS-ClientHello", *clientHello)
+		}
+
+		// Per-connection handshake timing — mirrors Bumblebee's
+		// tcp_to_chello_ms and chello_to_handshake_ms fields on
+		// ConnectionMetadata / SessionHeaders. Forwarded as headers so
+		// pronodes can log them for proxy-detection distribution
+		// analysis. Constant across every request over the same TCP
+		// connection; downstream should dedupe by (jti, values) if that
+		// matters.
+		//
+		// Caveat vs Bumblebee: chello_to_handshake_ms here is measured
+		// at ServeHTTP entry, which is a few ms after the TLS
+		// handshake actually completes (the std lib finishes the
+		// handshake between the CH being peeked and Caddy invoking
+		// this middleware). Same signal shape as Bumblebee's rustls
+		// into_stream().await measurement; slight positive baseline
+		// offset — downstream should not compare absolute values to
+		// Bumblebee's without accounting for that.
+		timing := h.cache.GetTiming(req.RemoteAddr)
+		if timing != nil {
+			serveEntry := time.Now()
+			tcpToChelloMs := timing.ClientHelloReceived.Sub(timing.ConnectionStart).Milliseconds()
+			chelloToHandshakeMs := serveEntry.Sub(timing.ClientHelloReceived).Milliseconds()
+			req.Header.Add("X-TLS-TCP-To-Chello-Ms", strconv.FormatInt(tcpToChelloMs, 10))
+			req.Header.Add("X-TLS-Chello-To-Handshake-Ms", strconv.FormatInt(chelloToHandshakeMs, 10))
+			h.log.Debug(
+				"Added handshake timing headers",
+				zap.String("addr", req.RemoteAddr),
+				zap.Int64("tcp_to_chello_ms", tcpToChelloMs),
+				zap.Int64("chello_to_handshake_ms", chelloToHandshakeMs),
+			)
 		}
 	}
 
