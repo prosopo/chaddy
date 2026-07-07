@@ -2,6 +2,7 @@ package caddy_clienthello
 
 import (
 	"net"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -79,8 +80,14 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
+	// t0: the moment we returned from the underlying TCP Accept.
+	// Mirrors Bumblebee's ConnectionMetadata.connection_start. Plumbed
+	// into the wrapper so ClientHelloConnWrapper.Read can compute
+	// tcp_to_chello_ms once the CH has been peeked.
+	connectionStart := time.Now()
+
 	// wrap the conn in a ClientHelloConnWrapper to intercept the client hello
-	conn = NewClientHelloConnWrapper(conn, l.cache, l.log)
+	conn = NewClientHelloConnWrapper(conn, l.cache, l.log, connectionStart)
 
 	return conn, nil
 }

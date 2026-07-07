@@ -2,6 +2,7 @@ package caddy_clienthello
 
 import (
 	"sync"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
@@ -19,14 +20,25 @@ type CacheEntry struct {
 	Value string
 }
 
+// TimingEntry records the two moments needed to compute the per-connection
+// handshake-timing deltas that mirror Bumblebee's tcp_to_chello_ms and
+// chello_to_handshake_ms. Keyed by remote addr (unique per TCP connection)
+// so ServeHTTP can look them up on the first request.
+type TimingEntry struct {
+	ConnectionStart     time.Time // when listener.Accept() returned
+	ClientHelloReceived time.Time // when the CH bytes were fully peeked
+}
+
 type Cache struct {
 	clientHellos map[string]CacheEntry
+	timings      map[string]TimingEntry
 	lock         sync.RWMutex
 	logger *zap.Logger
 }
 
 func (c *Cache) Provision(ctx caddy.Context) error {
 	c.clientHellos = make(map[string]CacheEntry)
+	c.timings = make(map[string]TimingEntry)
 	c.logger = ctx.Logger(c)
 	return nil
 }
@@ -48,7 +60,35 @@ func (c *Cache) ClearClientHello(addr string) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	delete(c.clientHellos, addr)
+	delete(c.timings, addr)
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
+}
+
+// SetTiming records the (connection_start, client_hello_received) pair
+// for a connection, keyed by remote addr so ServeHTTP can look them up
+// on the first request over that TCP connection.
+func (c *Cache) SetTiming(addr string, start time.Time, chelloReceived time.Time) {
+	c.logger.Debug("SetTiming", zap.String("addr", addr))
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.timings[addr] = TimingEntry{
+		ConnectionStart:     start,
+		ClientHelloReceived: chelloReceived,
+	}
+}
+
+// GetTiming returns the timing entry for a connection, or nil if none
+// is cached (e.g. connection wasn't a TLS handshake, or was already
+// cleared on close).
+func (c *Cache) GetTiming(addr string) *TimingEntry {
+	c.logger.Debug("GetTiming", zap.String("addr", addr))
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	entry, found := c.timings[addr]
+	if !found {
+		return nil
+	}
+	return &entry
 }
 
 func (c *Cache) GetClientHello(addr string) *string {
