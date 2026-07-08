@@ -69,28 +69,24 @@ func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request
 			req.Header.Add("X-TLS-ClientHello", *clientHello)
 		}
 
-		// Per-connection handshake timing — mirrors Bumblebee's
-		// tcp_to_chello and chello_to_handshake fields on
-		// ConnectionMetadata / SessionHeaders. Forwarded as headers so
-		// pronodes can log them for proxy-detection distribution
-		// analysis. Constant across every request over the same TCP
-		// connection; downstream should dedupe by (jti, values) if that
-		// matters.
+		// Per-connection TLS handshake timing, forwarded as headers so
+		// the downstream service can log them for proxy-detection
+		// distribution analysis. Constant across every request over
+		// the same TCP connection; the downstream should dedupe by
+		// (connection-id, values) if that matters.
 		//
 		// Microseconds, not milliseconds: ms buckets fast handshakes
 		// (local proxies, same-DC clients) to 0/1 and destroys the
-		// distribution shape we need for detection. Go's monotonic
+		// distribution shape needed for detection. Go's monotonic
 		// clock via time.Now() is ~1μs precise on Linux vDSO — μs is
 		// the honest resolution ceiling.
 		//
-		// Caveat vs Bumblebee: chello_to_handshake_us here is measured
-		// at ServeHTTP entry, which is a few tens of μs to a few ms
-		// after the TLS handshake actually completes (the std lib
-		// finishes the handshake between the CH being peeked and
-		// Caddy invoking this middleware). Same signal shape as
-		// Bumblebee's rustls into_stream().await measurement; slight
-		// positive baseline offset — downstream should not compare
-		// absolute values to Bumblebee's without accounting for that.
+		// chello_to_handshake_us is measured at ServeHTTP entry, which
+		// is a few tens of μs to a few ms after the TLS handshake
+		// actually completes (the std lib finishes the handshake
+		// between the CH being peeked and Caddy invoking this
+		// middleware). Small positive baseline offset — treat the
+		// value as relative-within-a-fleet, not absolute.
 		timing := h.cache.GetTiming(req.RemoteAddr)
 		if timing != nil {
 			serveEntry := time.Now()

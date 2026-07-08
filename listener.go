@@ -81,9 +81,8 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 	}
 
 	// t0: the moment we returned from the underlying TCP Accept.
-	// Mirrors Bumblebee's ConnectionMetadata.connection_start. Plumbed
-	// into the wrapper so ClientHelloConnWrapper.Read can compute
-	// tcp_to_chello_us once the CH has been peeked.
+	// Plumbed into the wrapper so ClientHelloConnWrapper.Read can
+	// compute tcp_to_chello_us once the CH has been peeked.
 	connectionStart := time.Now()
 
 	// wrap the conn in a ClientHelloConnWrapper to intercept the client hello
