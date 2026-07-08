@@ -21,8 +21,8 @@ type CacheEntry struct {
 }
 
 // TimingEntry records the two moments needed to compute the per-connection
-// handshake-timing deltas that mirror Bumblebee's tcp_to_chello_ms and
-// chello_to_handshake_ms. Keyed by remote addr (unique per TCP connection)
+// handshake-timing deltas that mirror Bumblebee's tcp_to_chello_us and
+// chello_to_handshake_us. Keyed by remote addr (unique per TCP connection)
 // so ServeHTTP can look them up on the first request.
 type TimingEntry struct {
 	ConnectionStart     time.Time // when listener.Accept() returned
