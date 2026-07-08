@@ -17,7 +17,7 @@ type ClientHelloConnWrapper struct {
 	bufferedReader *bufio.Reader
 	done   bool
 	cache *Cache
-	connectionStart time.Time // when listener.Accept() returned — plumbed in so Read can compute tcp_to_chello_ms
+	connectionStart time.Time // when listener.Accept() returned — plumbed in so Read can compute tcp_to_chello_us
 }
 
 // NewClientHelloConnWrapper creates a new wrapper
@@ -88,8 +88,7 @@ func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 	// t1: full CH bytes have been peeked. Delta from t0 (connectionStart)
 	// is inflated by the entire client-to-exit RTT chain when a CONNECT
 	// proxy sits in the path, because CH bytes only reach the exit
-	// box's TCP stack after traversing every hop. Same signal Bumblebee
-	// captures via ConnectionMetadata.tcp_to_chello_ms.
+	// box's TCP stack after traversing every hop.
 	clientHelloReceived := time.Now()
 
 	// record client hello in cache

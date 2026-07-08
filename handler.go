@@ -69,34 +69,36 @@ func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request
 			req.Header.Add("X-TLS-ClientHello", *clientHello)
 		}
 
-		// Per-connection handshake timing — mirrors Bumblebee's
-		// tcp_to_chello_ms and chello_to_handshake_ms fields on
-		// ConnectionMetadata / SessionHeaders. Forwarded as headers so
-		// pronodes can log them for proxy-detection distribution
-		// analysis. Constant across every request over the same TCP
-		// connection; downstream should dedupe by (jti, values) if that
-		// matters.
+		// Per-connection TLS handshake timing, forwarded as headers so
+		// the downstream service can log them for proxy-detection
+		// distribution analysis. Constant across every request over
+		// the same TCP connection; the downstream should dedupe by
+		// (connection-id, values) if that matters.
 		//
-		// Caveat vs Bumblebee: chello_to_handshake_ms here is measured
-		// at ServeHTTP entry, which is a few ms after the TLS
-		// handshake actually completes (the std lib finishes the
-		// handshake between the CH being peeked and Caddy invoking
-		// this middleware). Same signal shape as Bumblebee's rustls
-		// into_stream().await measurement; slight positive baseline
-		// offset — downstream should not compare absolute values to
-		// Bumblebee's without accounting for that.
+		// Microseconds, not milliseconds: ms buckets fast handshakes
+		// (local proxies, same-DC clients) to 0/1 and destroys the
+		// distribution shape needed for detection. Go's monotonic
+		// clock via time.Now() is ~1μs precise on Linux vDSO — μs is
+		// the honest resolution ceiling.
+		//
+		// chello_to_handshake_us is measured at ServeHTTP entry, which
+		// is a few tens of μs to a few ms after the TLS handshake
+		// actually completes (the std lib finishes the handshake
+		// between the CH being peeked and Caddy invoking this
+		// middleware). Small positive baseline offset — treat the
+		// value as relative-within-a-fleet, not absolute.
 		timing := h.cache.GetTiming(req.RemoteAddr)
 		if timing != nil {
 			serveEntry := time.Now()
-			tcpToChelloMs := timing.ClientHelloReceived.Sub(timing.ConnectionStart).Milliseconds()
-			chelloToHandshakeMs := serveEntry.Sub(timing.ClientHelloReceived).Milliseconds()
-			req.Header.Add("X-TLS-TCP-To-Chello-Ms", strconv.FormatInt(tcpToChelloMs, 10))
-			req.Header.Add("X-TLS-Chello-To-Handshake-Ms", strconv.FormatInt(chelloToHandshakeMs, 10))
+			tcpToChelloUs := timing.ClientHelloReceived.Sub(timing.ConnectionStart).Microseconds()
+			chelloToHandshakeUs := serveEntry.Sub(timing.ClientHelloReceived).Microseconds()
+			req.Header.Add("X-TLS-TCP-To-Chello-Us", strconv.FormatInt(tcpToChelloUs, 10))
+			req.Header.Add("X-TLS-Chello-To-Handshake-Us", strconv.FormatInt(chelloToHandshakeUs, 10))
 			h.log.Debug(
 				"Added handshake timing headers",
 				zap.String("addr", req.RemoteAddr),
-				zap.Int64("tcp_to_chello_ms", tcpToChelloMs),
-				zap.Int64("chello_to_handshake_ms", chelloToHandshakeMs),
+				zap.Int64("tcp_to_chello_us", tcpToChelloUs),
+				zap.Int64("chello_to_handshake_us", chelloToHandshakeUs),
 			)
 		}
 	}
