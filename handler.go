@@ -1,6 +1,7 @@
 package caddy_clienthello
 
 import (
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -21,8 +22,9 @@ func init() {
 }
 
 type ClientHelloHandler struct {
-	cache *Cache
-	log   *zap.Logger
+	cache  *Cache
+	config *Config
+	log    *zap.Logger
 }
 
 // CaddyModule implements caddy.Module
@@ -39,11 +41,22 @@ func (h *ClientHelloHandler) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return err
 	}
-
 	h.cache = a.(*Cache)
+
+	b, err := ctx.App(ConfigAppId)
+	if err != nil {
+		return err
+	}
+	h.config = b.(*Config)
+
 	h.log = ctx.Logger(h)
 
-	h.log.Info(("chaddy handler provisioned"))
+	if h.config.TcpProbeSocket != "" {
+		h.log.Info("chaddy handler provisioned",
+			zap.String("tcp_probe_socket", h.config.TcpProbeSocket))
+	} else {
+		h.log.Info("chaddy handler provisioned")
+	}
 
 	return nil
 }
@@ -101,9 +114,77 @@ func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request
 				zap.Int64("chello_to_handshake_us", chelloToHandshakeUs),
 			)
 		}
+
+		// Optional: enrich with raw TCP handshake signals from a
+		// co-located eBPF probe. Everything sent is a wire-observed
+		// primitive (RFC 793 / RFC 9293) — no fingerprints or derived
+		// metrics are computed here. The downstream service decides
+		// what (if anything) to derive.
+		if h.config.TcpProbeSocket != "" {
+			h.injectTcpProbeHeaders(req)
+		}
 	}
 
 	return next.ServeHTTP(rw, req)
+}
+
+// injectTcpProbeHeaders looks up the raw TCP handshake record for the
+// current connection and forwards each field as its own X-TLS-* header.
+// Any error (bad RemoteAddr, socket unreachable, timeout, miss) is
+// logged at debug and dropped — the request continues without the
+// extra headers.
+func (h *ClientHelloHandler) injectTcpProbeHeaders(req *http.Request) {
+	host, portStr, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		h.log.Debug("SplitHostPort failed on RemoteAddr",
+			zap.String("addr", req.RemoteAddr), zap.Error(err))
+		return
+	}
+	clientIP := net.ParseIP(host)
+	if clientIP == nil {
+		h.log.Debug("ParseIP failed on RemoteAddr host",
+			zap.String("host", host))
+		return
+	}
+	portInt, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		h.log.Debug("ParseUint failed on RemoteAddr port",
+			zap.String("port", portStr), zap.Error(err))
+		return
+	}
+
+	rec, err := LookupHandshake(h.config.TcpProbeSocket, clientIP, uint16(portInt))
+	if err != nil {
+		h.log.Debug("TCP probe lookup failed",
+			zap.String("addr", req.RemoteAddr), zap.Error(err))
+		return
+	}
+	if rec == nil {
+		h.log.Debug("TCP probe cache miss",
+			zap.String("addr", req.RemoteAddr))
+		return
+	}
+
+	// Header names deliberately match what the downstream provider
+	// middleware (rawTlsSignalsMiddleware in the closed-source Prosopo
+	// captcha provider) already parses. Any external consumer of chaddy
+	// can wire their own middleware against the same names.
+	req.Header.Set("X-TLS-Syn-Ns", strconv.FormatUint(rec.SynNs, 10))
+	req.Header.Set("X-TLS-Synack-Ns", strconv.FormatUint(rec.SynackNs, 10))
+	req.Header.Set("X-TLS-Ack-Ns", strconv.FormatUint(rec.AckNs, 10))
+	req.Header.Set("X-TLS-Observed-Ttl", strconv.FormatUint(uint64(rec.ObservedTtl), 10))
+	req.Header.Set("X-TLS-Tcp-Mss", strconv.FormatUint(uint64(rec.TcpMss), 10))
+	req.Header.Set("X-TLS-Tcp-Wscale", strconv.FormatUint(uint64(rec.TcpWscale), 10))
+	req.Header.Set("X-TLS-Tcp-Opts-Flags", strconv.FormatUint(uint64(rec.TcpOptsFlags), 10))
+	req.Header.Set("X-TLS-Tcp-Opts-Order", strconv.FormatUint(uint64(rec.TcpOptsOrder), 10))
+	req.Header.Set("X-TLS-Tcp-Window", strconv.FormatUint(uint64(rec.TcpWindow), 10))
+
+	h.log.Debug("Added TCP handshake headers",
+		zap.String("addr", req.RemoteAddr),
+		zap.Uint8("observed_ttl", rec.ObservedTtl),
+		zap.Uint16("tcp_mss", rec.TcpMss),
+		zap.Uint8("tcp_wscale", rec.TcpWscale),
+	)
 }
 
 // Interface guards

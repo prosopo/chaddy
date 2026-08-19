@@ -35,6 +35,12 @@ I recommended to disable HTTP/3.
     client_hello {
         # Configure the maximum allowed ClientHello packet size in bytes (1-16384)
         max_client_hello_size 16384
+
+        # Optional: path to a co-located eBPF TCP handshake probe's Unix
+        # socket. When set, each request is enriched with X-TLS-* headers
+        # carrying the raw wire signals from the client's SYN.
+        # See "TCP probe socket" section below.
+        tcp_probe_socket /var/run/ja4l/lookup.sock
     }
     servers {
         # Disable HTTP/3
@@ -72,3 +78,40 @@ This module also disables TLS session resumption globally to always retrieve a f
 This is done through the usage of
 [caddytls's `session_tickets/disabled`](https://caddyserver.com/docs/modules/tls#session_tickets/disabled)
 config option automatically.
+
+## TCP probe socket
+
+When `tcp_probe_socket` is set, chaddy performs a per-request Unix-socket
+lookup against a co-located eBPF TCP handshake probe and forwards the raw
+wire values from the client's SYN as HTTP headers. Every field is an
+RFC 793 / RFC 9293 primitive; no fingerprints or derived metrics are
+computed here.
+
+Headers added when the probe is reachable and has a cache hit for the
+current connection:
+
+| Header | Type | Meaning |
+| --- | --- | --- |
+| `X-TLS-Syn-Ns` | uint64 | Kernel monotonic ns when the client SYN arrived on the WAN interface |
+| `X-TLS-Synack-Ns` | uint64 | Kernel monotonic ns when the server SYN-ACK left |
+| `X-TLS-Ack-Ns` | uint64 | Kernel monotonic ns when the client ACK arrived |
+| `X-TLS-Observed-Ttl` | uint8 | TTL byte of the client's SYN |
+| `X-TLS-Tcp-Mss` | uint16 | TCP MSS option value from the client's SYN |
+| `X-TLS-Tcp-Wscale` | uint8 | TCP Window-Scale shift from the client's SYN |
+| `X-TLS-Tcp-Opts-Flags` | uint8 | Bitfield of TCP option presence (opaque; probe-defined) |
+| `X-TLS-Tcp-Opts-Order` | uint32 | Packed encoding of TCP option order (opaque; probe-defined) |
+| `X-TLS-Tcp-Window` | uint16 | TCP window field from the client's SYN |
+
+Kernel ns timestamps are boot-relative on the probe host, so only their
+deltas within a single connection are meaningful.
+
+Lookups have a 50 ms bounded timeout and are best-effort — a slow or
+unreachable probe never delays the request; the extra headers are just
+omitted for that request.
+
+**Wire protocol** expected on the socket: a 12-byte big-endian request
+(`client_ip[4] client_port[2] server_ip[4] server_port[2]`, server side
+is ignored / for future use), and an 80-byte fixed-size response — see
+`tcpProbe.go` for the exact layout. Prosopo's `ja4l-probe` binary is
+the reference implementation, but any probe that speaks the same
+protocol works.
