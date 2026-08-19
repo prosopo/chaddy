@@ -15,6 +15,21 @@ const (
 
 type Config struct {
 	MaxClientHelloSize uint16 `json:"max_client_hello_size"`
+	// TcpProbeSocket is the filesystem path to a co-located eBPF TCP
+	// handshake probe's Unix socket. When set, the ClientHelloHandler
+	// enriches each request with X-TLS-* headers carrying the raw
+	// wire signals the probe captured on the SYN (SYN/SYN-ACK/ACK ns
+	// timestamps, observed TTL, TCP options / MSS / wscale / window).
+	// When empty (the default), no lookup is attempted and no extra
+	// headers are injected — chaddy still forwards X-TLS-ClientHello
+	// exactly as before.
+	//
+	// Wire protocol expected on the socket: 12-byte big-endian request
+	// (client_ip[4], client_port[2], server_ip[4], server_port[2]),
+	// 80-byte fixed-size response (see tcpProbe.go for the layout).
+	// prosopo's ja4l-probe binary is the reference implementation but
+	// any probe that speaks the same protocol works.
+	TcpProbeSocket string `json:"tcp_probe_socket,omitempty"`
 }
 
 func init() {
@@ -40,6 +55,13 @@ func parseCaddyfile(d *caddyfile.Dispenser, _ any) (any, error) {
 					return nil, d.Errf("invalid max_client_hello_size, must be between [1, 16384]: %s", tmp)
 				}
 				config.MaxClientHelloSize = uint16(size)
+
+			case "tcp_probe_socket":
+				var tmp string
+				if !d.AllArgs(&tmp) {
+					return nil, d.Errf("invalid tcp_probe_socket")
+				}
+				config.TcpProbeSocket = tmp
 
 			default:
 				return nil, d.Errf("unrecognized option: %s", opt)
