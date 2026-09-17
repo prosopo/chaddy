@@ -115,3 +115,41 @@ is ignored / for future use), and an 80-byte fixed-size response — see
 `tcpProbe.go` for the exact layout. Prosopo's `ja4l-probe` binary is
 the reference implementation, but any probe that speaks the same
 protocol works.
+
+## Header order
+
+Go's HTTP server stores request headers in a map, so the order a client sent
+them in is gone before any handler runs, and `reverse_proxy` re-writes them
+upstream in its own sorted order. The `header_order` listener wrapper reads
+the header names off the decrypted connection first and the `client_hello`
+handler forwards them as `X-Header-Order`, comma-joined in arrival order:
+
+- HTTP/2: lowercase names including pseudo-headers, e.g.
+  `:method,:authority,:scheme,:path,content-length,user-agent,...`
+- HTTP/1.x: names with the client's casing, e.g. `Host,Connection,User-Agent,...`
+- Duplicates are kept. At most 128 names are recorded per request.
+
+A client-supplied `X-Header-Order` is always removed, whether or not an order
+was recorded. The header is omitted when no order is available: HTTP/3,
+connections without TLS, requests after a chunked request body or protocol
+upgrade on HTTP/1.1, or a connection whose framing could not be followed.
+
+Requires Caddy v2.11+. Place the wrapper after `tls`:
+
+```caddyfile
+{
+    servers {
+        protocols h1 h2
+        listener_wrappers {
+            client_hello
+            tls
+            header_order
+        }
+    }
+}
+
+localhost {
+    client_hello
+    reverse_proxy http://other.service
+}
+```

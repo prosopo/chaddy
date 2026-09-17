@@ -71,6 +71,8 @@ func (h *ClientHelloHandler) UnmarshalCaddyfile(_ *caddyfile.Dispenser) error {
 func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
 	h.log.Debug("ClientHelloHandler: ServeHTTP")
 
+	applyHeaderOrder(req)
+
 	if req.TLS.HandshakeComplete && req.ProtoMajor < 3 { // Check that this uses TLS and < HTTP/3
 		// get the client hello for the connection (which is cached by the remote addr, which is unique per connection)
 		clientHello := h.cache.GetClientHello(req.RemoteAddr)
