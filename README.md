@@ -127,12 +127,15 @@ handler forwards them as `X-Header-Order`, comma-joined in arrival order:
 - HTTP/2: lowercase names including pseudo-headers, e.g.
   `:method,:authority,:scheme,:path,content-length,user-agent,...`
 - HTTP/1.x: names with the client's casing, e.g. `Host,Connection,User-Agent,...`
-- Duplicates are kept. At most 128 names are recorded per request.
+- Duplicates are kept. At most 128 names and 4 KB are recorded per request.
 
 A client-supplied `X-Header-Order` is always removed, whether or not an order
-was recorded. The header is omitted when no order is available: HTTP/3,
-connections without TLS, requests after a chunked request body or protocol
-upgrade on HTTP/1.1, or a connection whose framing could not be followed.
+was recorded. A recorded order is only attached to a request with the same
+method, target (before any rewrite) and authority whose headers are all still
+present, so an order is omitted rather than guessed when it can't be matched.
+It is also omitted for HTTP/3, connections without TLS, requests after a
+chunked request body on HTTP/1.1, and connections whose framing could not be
+followed.
 
 Requires Caddy v2.11+. Place the wrapper after `tls`:
 
@@ -143,7 +146,11 @@ Requires Caddy v2.11+. Place the wrapper after `tls`:
         listener_wrappers {
             client_hello
             tls
-            header_order
+            header_order {
+                # Close connections that haven't finished the TLS handshake
+                # and sent request bytes within this time. Default 10s.
+                timeout 10s
+            }
         }
     }
 }
@@ -153,3 +160,8 @@ localhost {
     reverse_proxy http://other.service
 }
 ```
+
+`timeout` exists because Go's HTTP server only applies its TLS handshake and
+HTTP/2 preface timeouts to an unwrapped `*tls.Conn`. Every wrapper placed after
+`tls` loses them; without this option a client that connects and sends nothing
+would be held open indefinitely.

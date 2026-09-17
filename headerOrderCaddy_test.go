@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -63,12 +64,23 @@ func freeAddr(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-func startCaddy(t *testing.T) string {
+var echoRoute = map[string]any{
+	"handle": []map[string]any{
+		{"handler": "client_hello"},
+		{"handler": "static_response", "body": echoBody},
+	},
+}
+
+func startCaddy(t *testing.T, routes []map[string]any, firstBytesTimeout string) string {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	certPEM, keyPEM := selfSignedPEM(t)
 	addr := freeAddr(t)
+	wrapper := map[string]any{"wrapper": "header_order"}
+	if firstBytesTimeout != "" {
+		wrapper["timeout"] = firstBytesTimeout
+	}
 	config := map[string]any{
 		"admin":   map[string]any{"disabled": true},
 		"logging": map[string]any{"logs": map[string]any{"default": map[string]any{"level": "ERROR"}}},
@@ -83,15 +95,10 @@ func startCaddy(t *testing.T) string {
 					"test": map[string]any{
 						"listen":                  []string{addr},
 						"protocols":               []string{"h1", "h2"},
-						"listener_wrappers":       []map[string]any{{"wrapper": "header_order"}},
+						"listener_wrappers":       []map[string]any{wrapper},
 						"tls_connection_policies": []map[string]any{{}},
 						"automatic_https":         map[string]any{"disable": true},
-						"routes": []map[string]any{{
-							"handle": []map[string]any{
-								{"handler": "client_hello"},
-								{"handler": "static_response", "body": echoBody},
-							},
-						}},
+						"routes":                  routes,
 					},
 				},
 			},
@@ -160,7 +167,7 @@ func h2Request(t *testing.T, conn *tls.Conn, framer *http2.Framer, encoder *hpac
 }
 
 func TestCaddyForwardsHTTP2HeaderOrder(t *testing.T) {
-	addr := startCaddy(t)
+	addr := startCaddy(t, []map[string]any{echoRoute}, "")
 	conn := dialTLS(t, addr, "h2")
 	if _, err := io.WriteString(conn, http2.ClientPreface); err != nil {
 		t.Fatal(err)
@@ -208,7 +215,7 @@ func TestCaddyForwardsHTTP2HeaderOrder(t *testing.T) {
 }
 
 func TestCaddyForwardsHTTP1HeaderOrder(t *testing.T) {
-	addr := startCaddy(t)
+	addr := startCaddy(t, []map[string]any{echoRoute}, "")
 	conn := dialTLS(t, addr, "http/1.1")
 	requests := "POST /submit HTTP/1.1\r\n" +
 		"Host: localhost\r\n" +
@@ -258,5 +265,123 @@ func TestClientSuppliedHeaderOrderIsRemovedWithoutTheWrapper(t *testing.T) {
 	applyHeaderOrder(req)
 	if _, present := req.Header[HeaderOrderHeader]; present {
 		t.Fatal("a client-supplied X-Header-Order must not reach the upstream")
+	}
+}
+
+type h2Client struct {
+	t       *testing.T
+	conn    *tls.Conn
+	framer  *http2.Framer
+	encoder *hpack.Encoder
+	block   bytes.Buffer
+}
+
+func newH2Client(t *testing.T, addr string) *h2Client {
+	t.Helper()
+	c := &h2Client{t: t, conn: dialTLS(t, addr, "h2")}
+	if _, err := io.WriteString(c.conn, http2.ClientPreface); err != nil {
+		t.Fatal(err)
+	}
+	c.framer = http2.NewFramer(c.conn, c.conn)
+	c.framer.ReadMetaHeaders = hpack.NewDecoder(65536, nil)
+	if err := c.framer.WriteSettings(); err != nil {
+		t.Fatal(err)
+	}
+	c.encoder = hpack.NewEncoder(&c.block)
+	return c
+}
+
+func (c *h2Client) do(streamID uint32, fields []testField) string {
+	return h2Request(c.t, c.conn, c.framer, c.encoder, &c.block, streamID, fields)
+}
+
+func TestCaddyAttachesOrderToTheRightRequestOnASharedConnection(t *testing.T) {
+	skipsHandler := map[string]any{
+		"match":    []map[string]any{{"host": []string{"other.test"}}},
+		"handle":   []map[string]any{{"handler": "static_response", "body": "no client_hello here"}},
+		"terminal": true,
+	}
+	rewriteFirst := map[string]any{
+		"match": []map[string]any{{"path": []string{"/old"}}},
+		"handle": []map[string]any{
+			{"handler": "rewrite", "uri": "/new?q=1"},
+			{"handler": "client_hello"},
+			{"handler": "static_response", "body": echoBody},
+		},
+		"terminal": true,
+	}
+	addr := startCaddy(t, []map[string]any{skipsHandler, rewriteFirst, echoRoute}, "")
+	client := newH2Client(t, addr)
+
+	skipped := []testField{{":method", "GET"}, {":authority", "other.test"}, {":scheme", "https"}, {":path", "/"}, {"a-first", "1"}}
+	if got := client.do(1, skipped); got != "no client_hello here" {
+		t.Fatalf("unexpected body %q", got)
+	}
+	served := []testField{{":method", "GET"}, {":authority", "localhost"}, {":scheme", "https"}, {":path", "/"}, {"b-second", "1"}}
+	if got, want := client.do(3, served), "order="+strings.Join(names(served), ",")+";tls=tls1.3;proto=HTTP/2.0"; got != want {
+		t.Fatalf("order from a request that skipped the handler leaked\n got: %s\nwant: %s", got, want)
+	}
+	rewritten := []testField{{":method", "GET"}, {":authority", "localhost"}, {":scheme", "https"}, {":path", "/old"}, {"c-third", "1"}}
+	if got, want := client.do(5, rewritten), "order="+strings.Join(names(rewritten), ",")+";tls=tls1.3;proto=HTTP/2.0"; got != want {
+		t.Fatalf("a rewrite before client_hello lost the order\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func closedWithin(conn net.Conn, limit time.Duration) bool {
+	_ = conn.SetReadDeadline(time.Now().Add(limit))
+	_, err := conn.Read(make([]byte, 1))
+	var netErr net.Error
+	return err != nil && !(errors.As(err, &netErr) && netErr.Timeout())
+}
+
+func TestCaddyClosesSilentConnections(t *testing.T) {
+	addr := startCaddy(t, []map[string]any{echoRoute}, "300ms")
+
+	raw, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if !closedWithin(raw, 3*time.Second) {
+		t.Fatal("a connection that never starts TLS must be closed")
+	}
+	for _, alpn := range []string{"http/1.1", "h2"} {
+		conn := dialTLS(t, addr, alpn)
+		if !closedWithin(conn, 3*time.Second) {
+			t.Fatalf("a %s connection that sends nothing after the handshake must be closed", alpn)
+		}
+	}
+}
+
+func TestCaddyKeepsActiveConnectionsPastTheTimeout(t *testing.T) {
+	addr := startCaddy(t, []map[string]any{echoRoute}, "300ms")
+	client := newH2Client(t, addr)
+	request := []testField{{":method", "GET"}, {":authority", "localhost"}, {":scheme", "https"}, {":path", "/"}}
+	want := "order=" + strings.Join(names(request), ",") + ";tls=tls1.3;proto=HTTP/2.0"
+	if got := client.do(1, request); got != want {
+		t.Fatalf("got %s", got)
+	}
+	time.Sleep(800 * time.Millisecond)
+	if got := client.do(3, request); got != want {
+		t.Fatalf("after the timeout got %s", got)
+	}
+}
+
+func TestCaddyRemovesRecordersWhenConnectionsClose(t *testing.T) {
+	addr := startCaddy(t, []map[string]any{echoRoute}, "")
+	conn := dialTLS(t, addr, "http/1.1")
+	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	key := conn.LocalAddr().String()
+	if _, err := io.ReadAll(conn); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for headerOrders.get(key) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the recorder for a closed connection is still registered")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

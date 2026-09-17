@@ -2,7 +2,7 @@ package caddy_clienthello
 
 import (
 	"bytes"
-	"reflect"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -32,6 +32,21 @@ func names(fields []testField) []string {
 		out[i] = f.name
 	}
 	return out
+}
+
+func orderOf(fields []testField) string {
+	return strings.Join(names(fields), ",")
+}
+
+// headerFor builds the Request.Header Go would parse from these fields.
+func headerFor(fields []testField) http.Header {
+	header := http.Header{}
+	for _, f := range fields {
+		if !strings.HasPrefix(f.name, ":") {
+			header.Add(f.name, f.value)
+		}
+	}
+	return header
 }
 
 func feedInChunks(recorder *headerOrderRecorder, data []byte, chunk int) {
@@ -64,85 +79,108 @@ var chromeFetch = []testField{
 	{"priority", "u=1, i"},
 }
 
+var reorderedGet = []testField{
+	{":method", "GET"},
+	{":authority", "pronode.example"},
+	{":scheme", "https"},
+	{":path", "/second"},
+	{"sec-ch-ua", `"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"`},
+	{"user-agent", chromeFetch[6].value},
+	{"accept", "*/*"},
+	{"priority", "u=1, i"},
+}
+
+type h2Writer struct {
+	t       *testing.T
+	wire    bytes.Buffer
+	framer  *http2.Framer
+	block   bytes.Buffer
+	encoder *hpack.Encoder
+}
+
+func newH2Writer(t *testing.T) *h2Writer {
+	w := &h2Writer{t: t}
+	w.wire.WriteString(http2.ClientPreface)
+	w.framer = http2.NewFramer(&w.wire, nil)
+	w.encoder = hpack.NewEncoder(&w.block)
+	if err := w.framer.WriteSettings(http2.Setting{ID: http2.SettingHeaderTableSize, Val: 65536}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.framer.WriteWindowUpdate(0, 15663105); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+func (w *h2Writer) headers(streamID uint32, fields []testField) {
+	w.t.Helper()
+	fragment := encodeBlock(w.t, w.encoder, &w.block, fields)
+	if err := w.framer.WriteHeaders(http2.HeadersFrameParam{StreamID: streamID, BlockFragment: fragment, EndHeaders: true, EndStream: true}); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
 func h2ClientStream(t *testing.T) []byte {
 	t.Helper()
-	var wire bytes.Buffer
-	wire.WriteString(http2.ClientPreface)
-	framer := http2.NewFramer(&wire, nil)
-	if err := framer.WriteSettings(http2.Setting{ID: http2.SettingHeaderTableSize, Val: 65536}); err != nil {
-		t.Fatal(err)
-	}
-	if err := framer.WriteWindowUpdate(0, 15663105); err != nil {
-		t.Fatal(err)
-	}
+	w := newH2Writer(t)
 
-	var block bytes.Buffer
-	encoder := hpack.NewEncoder(&block)
-
-	first := encodeBlock(t, encoder, &block, chromeFetch)
+	first := encodeBlock(t, w.encoder, &w.block, chromeFetch)
 	split := len(first) / 3
-	if err := framer.WriteHeaders(http2.HeadersFrameParam{
+	if err := w.framer.WriteHeaders(http2.HeadersFrameParam{
 		StreamID:      1,
 		BlockFragment: first[:split],
-		EndHeaders:    false,
 		PadLength:     7,
 		Priority:      http2.PriorityParam{StreamDep: 0, Weight: 219, Exclusive: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := framer.WriteContinuation(1, false, first[split:2*split]); err != nil {
+	if err := w.framer.WriteContinuation(1, false, first[split:2*split]); err != nil {
 		t.Fatal(err)
 	}
-	if err := framer.WriteContinuation(1, true, first[2*split:]); err != nil {
+	if err := w.framer.WriteContinuation(1, true, first[2*split:]); err != nil {
 		t.Fatal(err)
 	}
-	if err := framer.WriteData(1, false, bytes.Repeat([]byte("x"), 120)); err != nil {
+	if err := w.framer.WriteData(1, false, bytes.Repeat([]byte("x"), 120)); err != nil {
 		t.Fatal(err)
 	}
-
-	trailer := encodeBlock(t, encoder, &block, []testField{{"x-trailer", "1"}})
-	if err := framer.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: trailer, EndHeaders: true, EndStream: true}); err != nil {
-		t.Fatal(err)
-	}
-
-	reordered := []testField{
-		{":method", "GET"},
-		{":authority", "pronode.example"},
-		{":scheme", "https"},
-		{":path", "/second"},
-		{"sec-ch-ua", `"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"`},
-		{"user-agent", chromeFetch[6].value},
-		{"accept", "*/*"},
-		{"priority", "u=1, i"},
-	}
-	second := encodeBlock(t, encoder, &block, reordered)
-	if err := framer.WriteHeaders(http2.HeadersFrameParam{StreamID: 3, BlockFragment: second, EndHeaders: true, EndStream: true}); err != nil {
-		t.Fatal(err)
-	}
-	return wire.Bytes()
+	w.headers(1, []testField{{"x-trailer", "1"}})
+	w.headers(3, reorderedGet)
+	return w.wire.Bytes()
 }
 
 func TestH2HeaderOrderSurvivesFramingAndDynamicTable(t *testing.T) {
 	wire := h2ClientStream(t)
 	for _, chunk := range []int{1, 7, 4096, len(wire)} {
-		recorder := newHeaderOrderRecorder()
+		recorder := &headerOrderRecorder{}
 		feedInChunks(recorder, wire, chunk)
 
-		got, ok := recorder.take("GET", "/second")
-		want := []string{":method", ":authority", ":scheme", ":path", "sec-ch-ua", "user-agent", "accept", "priority"}
-		if !ok || !reflect.DeepEqual(got, want) {
-			t.Fatalf("chunk %d: second stream got %v, want %v", chunk, got, want)
+		got, _ := recorder.take("GET", "/second", "pronode.example", headerFor(reorderedGet))
+		if got != orderOf(reorderedGet) {
+			t.Fatalf("chunk %d: second stream got %v", chunk, got)
 		}
-		got, ok = recorder.take("POST", "/v1/prosopo/provider/client/captcha/pow")
-		if !ok || !reflect.DeepEqual(got, names(chromeFetch)) {
-			t.Fatalf("chunk %d: first stream got %v, want %v", chunk, got, names(chromeFetch))
+		got, _ = recorder.take("POST", "/v1/prosopo/provider/client/captcha/pow", "pronode.example", headerFor(chromeFetch))
+		if got != orderOf(chromeFetch) {
+			t.Fatalf("chunk %d: first stream got %v", chunk, got)
 		}
-		if len(recorder.pending) != 0 {
-			t.Fatalf("chunk %d: trailers or duplicates were recorded: %v", chunk, recorder.pending)
+		if len(recorder.pending) != 0 || recorder.failed {
+			t.Fatalf("chunk %d: pending %v, failed %v", chunk, recorder.pending, recorder.failed)
 		}
-		if recorder.failed {
-			t.Fatalf("chunk %d: recorder failed", chunk)
-		}
+	}
+}
+
+func TestH2ConsecutiveLargeHeaderBlocksAreBothRecorded(t *testing.T) {
+	w := newH2Writer(t)
+	large := strings.Repeat("v", 600<<10)
+	for i, path := range []string{"/a", "/b"} {
+		w.headers(uint32(2*i+1), []testField{{":method", "GET"}, {":authority", "h"}, {":scheme", "https"}, {":path", path}, {"x-large", large}})
+	}
+	recorder := &headerOrderRecorder{}
+	recorder.observe(w.wire.Bytes())
+	header := http.Header{"X-Large": {large}}
+	_, gotA := recorder.take("GET", "/a", "h", header)
+	_, gotB := recorder.take("GET", "/b", "h", header)
+	if !gotA || !gotB {
+		t.Fatalf("both blocks should be recorded; failed=%v", recorder.failed)
 	}
 }
 
@@ -153,72 +191,116 @@ func TestH2HeaderOrderStopsOnMalformedFrames(t *testing.T) {
 	if err := framer.WriteContinuation(1, true, []byte{0x82}); err != nil {
 		t.Fatal(err)
 	}
-	recorder := newHeaderOrderRecorder()
+	recorder := &headerOrderRecorder{}
 	recorder.observe(wire.Bytes())
 	if !recorder.failed {
 		t.Fatal("a CONTINUATION without HEADERS should stop recording")
 	}
-	recorder.observe([]byte("anything"))
+	recorder.observe([]byte("GET / HTTP/1.1\r\nHost: a\r\n\r\n"))
 	if len(recorder.pending) != 0 {
 		t.Fatal("a failed recorder must not queue entries")
 	}
 }
 
+func TestTakeMatchesAuthorityAndHeaderSet(t *testing.T) {
+	recorder := &headerOrderRecorder{}
+	recorder.push(headerOrderEntry{method: "GET", target: "/", authority: "other", order: []byte(":method,a-first")})
+	recorder.push(headerOrderEntry{method: "GET", target: "/", authority: "localhost", order: []byte(":method,x-left-behind")})
+	recorder.push(headerOrderEntry{method: "GET", target: "/", authority: "localhost", order: []byte(":method,b-second")})
+
+	got, _ := recorder.take("GET", "/", "localhost", http.Header{"B-Second": {"1"}})
+	if got != ":method,b-second" {
+		t.Fatalf("got %v", got)
+	}
+	if len(recorder.pending) != 2 {
+		t.Fatalf("HTTP/2 must only remove the match, pending = %v", recorder.pending)
+	}
+	if _, ok := recorder.take("GET", "/", "localhost", http.Header{}); ok {
+		t.Fatal("an entry whose headers aren't on the request must not match")
+	}
+}
+
+func TestSequentialTakeDropsEntriesThatCanNoLongerMatch(t *testing.T) {
+	recorder := &headerOrderRecorder{sequential: true}
+	recorder.push(headerOrderEntry{method: "GET", target: "/robots.txt", authority: "a"})
+	recorder.push(headerOrderEntry{method: "GET", target: "/", authority: "a", order: []byte("Host")})
+	recorder.push(headerOrderEntry{method: "GET", target: "/next", authority: "a"})
+	if _, ok := recorder.take("GET", "/", "a", http.Header{}); !ok {
+		t.Fatal("expected a match")
+	}
+	if len(recorder.pending) != 1 || recorder.pending[0].target != "/next" {
+		t.Fatalf("pending = %v", recorder.pending)
+	}
+}
+
+func TestNamesPresentSkipsFieldsTheServerRemoves(t *testing.T) {
+	recorded := []byte(":path,Host,Content-Length,Transfer-Encoding,Trailer,Connection,X-Header-Order,x_underscore,Accept")
+	if !namesPresent(recorded, http.Header{"Accept": {"*/*"}}) {
+		t.Fatal("fields Go or Caddy remove from Request.Header must be ignored")
+	}
+	if namesPresent([]byte("Accept,Origin"), http.Header{"Accept": {"*/*"}}) {
+		t.Fatal("a missing field must fail the check")
+	}
+}
+
 func TestH1HeaderOrderKeepsCasingDuplicatesAndPipelining(t *testing.T) {
-	body := `{"a":1}`
 	wire := "POST /first HTTP/1.1\r\n" +
 		"Host: pronode.example\r\n" +
 		"Connection: keep-alive\r\n" +
-		"Content-Length: " + "7" + "\r\n" +
+		"Content-Length: 7\r\n" +
 		"sec-ch-ua-platform: \"Windows\"\r\n" +
 		"User-Agent: Mozilla/5.0\r\n" +
 		"Cookie: a=1\r\n" +
 		"Cookie: b=2\r\n" +
-		"\r\n" + body +
-		"\r\nGET /second?x=1 HTTP/1.1\r\n" +
-		"Host: pronode.example\r\n" +
-		"Accept: */*\r\n" +
-		"\r\n"
-	for _, chunk := range []int{1, 5, len(wire)} {
-		recorder := newHeaderOrderRecorder()
+		"\r\n" + `{"a":1}` +
+		"\r\nGET /second?x=1 HTTP/1.1\n" +
+		"Host: pronode.example\n" +
+		"Accept: */*\n" +
+		"\n"
+	for _, chunk := range []int{1, 2, 3, 5, len(wire)} {
+		recorder := &headerOrderRecorder{}
 		feedInChunks(recorder, []byte(wire), chunk)
 
-		got, ok := recorder.take("POST", "/first")
-		want := []string{"Host", "Connection", "Content-Length", "sec-ch-ua-platform", "User-Agent", "Cookie", "Cookie"}
-		if !ok || !reflect.DeepEqual(got, want) {
-			t.Fatalf("chunk %d: first request got %v, want %v", chunk, got, want)
+		header := http.Header{"Sec-Ch-Ua-Platform": {`"Windows"`}, "User-Agent": {"Mozilla/5.0"}, "Cookie": {"a=1", "b=2"}}
+		got, _ := recorder.take("POST", "/first", "pronode.example", header)
+		want := "Host,Connection,Content-Length,sec-ch-ua-platform,User-Agent,Cookie,Cookie"
+		if got != want {
+			t.Fatalf("chunk %d: first request got %v, want %v (failed=%v)", chunk, got, want, recorder.failed)
 		}
-		got, ok = recorder.take("GET", "/second?x=1")
-		if !ok || !reflect.DeepEqual(got, []string{"Host", "Accept"}) {
-			t.Fatalf("chunk %d: second request got %v", chunk, got)
+		got, _ = recorder.take("GET", "/second?x=1", "pronode.example", http.Header{"Accept": {"*/*"}})
+		if got != "Host,Accept" {
+			t.Fatalf("chunk %d: bare-LF request got %v", chunk, got)
 		}
 	}
 }
 
 func TestH1HeaderOrderStopsAtChunkedBodies(t *testing.T) {
-	wire := "POST /upload HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nGET /\r\n0\r\n\r\n" +
+	smuggled := "GET /smuggled HTTP/1.1\r\nHost: a\r\n\r\n"
+	wire := "POST /upload HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n" + smuggled +
 		"GET /after HTTP/1.1\r\nHost: a\r\n\r\n"
-	recorder := newHeaderOrderRecorder()
+	recorder := &headerOrderRecorder{}
 	recorder.observe([]byte(wire))
-	if _, ok := recorder.take("POST", "/upload"); !ok {
-		t.Fatal("the chunked request's own head should be recorded")
-	}
-	if _, ok := recorder.take("GET", "/after"); ok {
-		t.Fatal("requests after a chunked body must not be recorded")
-	}
-	if _, ok := recorder.take("GET", "/"); ok {
-		t.Fatal("chunked body bytes must not be read as a request")
+	if len(recorder.pending) != 1 || recorder.pending[0].target != "/upload" || recorder.failed {
+		t.Fatalf("only the chunked request's own head should be recorded, pending = %v", recorder.pending)
 	}
 }
 
-func TestPendingHeaderOrdersAreBounded(t *testing.T) {
-	recorder := newHeaderOrderRecorder()
+func TestHeaderOrderMemoryIsBounded(t *testing.T) {
+	recorder := &headerOrderRecorder{}
 	var wire strings.Builder
+	manyNames := strings.Repeat("X-"+strings.Repeat("n", 500)+": v\r\n", 20)
 	for i := 0; i < maxPendingHeaderOrders+10; i++ {
-		wire.WriteString("GET /r HTTP/1.1\r\nHost: a\r\n\r\n")
+		wire.WriteString("GET /r HTTP/1.1\r\nHost: a\r\n" + manyNames + "\r\n")
 	}
+	wire.WriteString("GET /" + strings.Repeat("p", maxMatchFieldBytes) + " HTTP/1.1\r\nHost: a\r\n\r\n")
 	recorder.observe([]byte(wire.String()))
+
 	if len(recorder.pending) != maxPendingHeaderOrders {
 		t.Fatalf("pending = %d, want %d", len(recorder.pending), maxPendingHeaderOrders)
+	}
+	for _, entry := range recorder.pending {
+		if len(entry.order) > maxHeaderOrderBytes || entry.target != "/r" {
+			t.Fatalf("entry holds %d order bytes for %q", len(entry.order), entry.target)
+		}
 	}
 }
