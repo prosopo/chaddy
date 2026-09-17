@@ -115,3 +115,53 @@ is ignored / for future use), and an 80-byte fixed-size response — see
 `tcpProbe.go` for the exact layout. Prosopo's `ja4l-probe` binary is
 the reference implementation, but any probe that speaks the same
 protocol works.
+
+## Header order
+
+Go's HTTP server stores request headers in a map, so the order a client sent
+them in is gone before any handler runs, and `reverse_proxy` re-writes them
+upstream in its own sorted order. The `header_order` listener wrapper reads
+the header names off the decrypted connection first and the `client_hello`
+handler forwards them as `X-Header-Order`, comma-joined in arrival order:
+
+- HTTP/2: lowercase names including pseudo-headers, e.g.
+  `:method,:authority,:scheme,:path,content-length,user-agent,...`
+- HTTP/1.x: names with the client's casing, e.g. `Host,Connection,User-Agent,...`
+- Duplicates are kept. At most 128 names and 4 KB are recorded per request.
+
+A client-supplied `X-Header-Order` is always removed, whether or not an order
+was recorded. A recorded order is only attached to a request with the same
+method, target (before any rewrite) and authority whose headers are all still
+present, so an order is omitted rather than guessed when it can't be matched.
+It is also omitted for HTTP/3, connections without TLS, requests after a
+chunked request body on HTTP/1.1, and connections whose framing could not be
+followed.
+
+Requires Caddy v2.11+. Place the wrapper after `tls`:
+
+```caddyfile
+{
+    servers {
+        protocols h1 h2
+        listener_wrappers {
+            client_hello
+            tls
+            header_order {
+                # Close connections that haven't finished the TLS handshake
+                # and sent request bytes within this time. Default 10s.
+                timeout 10s
+            }
+        }
+    }
+}
+
+localhost {
+    client_hello
+    reverse_proxy http://other.service
+}
+```
+
+`timeout` exists because Go's HTTP server only applies its TLS handshake and
+HTTP/2 preface timeouts to an unwrapped `*tls.Conn`. Every wrapper placed after
+`tls` loses them; without this option a client that connects and sends nothing
+would be held open indefinitely.
