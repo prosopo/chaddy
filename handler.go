@@ -1,9 +1,11 @@
 package caddy_clienthello
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -25,6 +27,13 @@ type ClientHelloHandler struct {
 	cache  *Cache
 	config *Config
 	log    *zap.Logger
+
+	// lastSizeMismatchLog is the UnixNano of the last record-size mismatch
+	// we logged, throttling a per-deployment fault that would otherwise
+	// report once per request. See logRecordSizeMismatch. A pointer because
+	// CaddyModule takes this struct by value, and an inline atomic makes
+	// that a vet failure.
+	lastSizeMismatchLog *atomic.Int64
 }
 
 // CaddyModule implements caddy.Module
@@ -50,6 +59,7 @@ func (h *ClientHelloHandler) Provision(ctx caddy.Context) error {
 	h.config = b.(*Config)
 
 	h.log = ctx.Logger(h)
+	h.lastSizeMismatchLog = &atomic.Int64{}
 
 	if h.config.TcpProbeSocket != "" {
 		h.log.Info("chaddy handler provisioned",
@@ -155,6 +165,10 @@ func (h *ClientHelloHandler) injectTcpProbeHeaders(req *http.Request) {
 
 	rec, err := LookupHandshake(h.config.TcpProbeSocket, clientIP, uint16(portInt))
 	if err != nil {
+		if errors.Is(err, ErrRecordSizeMismatch) {
+			h.logRecordSizeMismatch(err)
+			return
+		}
 		h.log.Debug("TCP probe lookup failed",
 			zap.String("addr", req.RemoteAddr), zap.Error(err))
 		return
@@ -175,16 +189,71 @@ func (h *ClientHelloHandler) injectTcpProbeHeaders(req *http.Request) {
 	req.Header.Set("X-TLS-Observed-Ttl", strconv.FormatUint(uint64(rec.ObservedTtl), 10))
 	req.Header.Set("X-TLS-Tcp-Mss", strconv.FormatUint(uint64(rec.TcpMss), 10))
 	req.Header.Set("X-TLS-Tcp-Wscale", strconv.FormatUint(uint64(rec.TcpWscale), 10))
-	req.Header.Set("X-TLS-Tcp-Opts-Flags", strconv.FormatUint(uint64(rec.TcpOptsFlags), 10))
-	req.Header.Set("X-TLS-Tcp-Opts-Order", strconv.FormatUint(uint64(rec.TcpOptsOrder), 10))
 	req.Header.Set("X-TLS-Tcp-Window", strconv.FormatUint(uint64(rec.TcpWindow), 10))
+
+	// Replaces X-TLS-Tcp-Opts-Order and X-TLS-Tcp-Opts-Flags, which named
+	// fields the 104-byte record no longer has. Deliberately new names
+	// rather than the old ones carrying new meanings: reusing a name for a
+	// differently-encoded value is how a column silently changes what it
+	// holds, which is the failure this whole change exists to stop.
+	req.Header.Set("X-TLS-Tcp-Opts-Kinds", strconv.FormatUint(rec.TcpOptsKinds, 10))
+	req.Header.Set("X-TLS-Tcp-Opts-Present", strconv.FormatUint(uint64(rec.TcpOptsPresent), 10))
+	req.Header.Set("X-TLS-Tcp-Opts-Count", strconv.FormatUint(uint64(rec.TcpOptsCount), 10))
+	req.Header.Set("X-TLS-Tcp-Flags", strconv.FormatUint(uint64(rec.TcpFlags), 10))
+	req.Header.Set("X-TLS-Tcp-Data-Offset-Resv", strconv.FormatUint(uint64(rec.TcpDataOffsetResv), 10))
+	req.Header.Set("X-TLS-Tcp-Urg-Ptr", strconv.FormatUint(uint64(rec.TcpUrgPtr), 10))
+	req.Header.Set("X-TLS-Ip-Ident", strconv.FormatUint(uint64(rec.IpIdent), 10))
+	req.Header.Set("X-TLS-Ip-Total-Len", strconv.FormatUint(uint64(rec.IpTotalLen), 10))
+	req.Header.Set("X-TLS-Ip-Frag-Flags", strconv.FormatUint(uint64(rec.IpFragFlags), 10))
+	req.Header.Set("X-TLS-Ip-Tos", strconv.FormatUint(uint64(rec.IpTos), 10))
+
+	// Gated on the presence bit rather than on the value. A TSval of
+	// exactly 0 is legal — a machine in its first tick after boot — and
+	// TSecr is *expected* to be 0 on a SYN, so zero cannot stand for
+	// absent. Sending these when the option was not on the SYN would
+	// publish uninitialised fields as observations.
+	if rec.HasOption(OptTimestamps) {
+		req.Header.Set("X-TLS-Tcp-Tsval", strconv.FormatUint(uint64(rec.TcpTsval), 10))
+		req.Header.Set("X-TLS-Tcp-Tsecr", strconv.FormatUint(uint64(rec.TcpTsecr), 10))
+	}
 
 	h.log.Debug("Added TCP handshake headers",
 		zap.String("addr", req.RemoteAddr),
 		zap.Uint8("observed_ttl", rec.ObservedTtl),
 		zap.Uint16("tcp_mss", rec.TcpMss),
 		zap.Uint8("tcp_wscale", rec.TcpWscale),
+		zap.Uint16("tcp_opts_present", rec.TcpOptsPresent),
+		zap.Uint8("tcp_opts_count", rec.TcpOptsCount),
 	)
+}
+
+// recordSizeMismatchLogInterval throttles the mismatch error. The
+// condition is per-deployment, not per-request, so without a throttle one
+// skewed sidecar would emit a line on every request on the node and bury
+// everything else in the log. One a minute keeps it continuously visible
+// to whoever looks — including someone who looks an hour later — without
+// that.
+const recordSizeMismatchLogInterval = time.Minute
+
+// logRecordSizeMismatch reports a sidecar whose record is not the size
+// this build parses. At error, because it means the two are at different
+// versions and nothing will fix itself: until they match, every lookup on
+// this node is dropped and the TCP columns go empty. Empty is the
+// intended outcome — the alternative, which this replaced, was parsing
+// the old offsets out of the new layout and writing plausible-looking
+// wrong integers.
+func (h *ClientHelloHandler) logRecordSizeMismatch(err error) {
+	now := time.Now().UnixNano()
+	last := h.lastSizeMismatchLog.Load()
+	if now-last < int64(recordSizeMismatchLogInterval) {
+		return
+	}
+	if !h.lastSizeMismatchLog.CompareAndSwap(last, now) {
+		return
+	}
+	h.log.Error("TCP probe record layout mismatch — dropping all handshake headers; "+
+		"chaddy and the tcp-probe sidecar must be deployed as a pair",
+		zap.Error(err))
 }
 
 // Interface guards
