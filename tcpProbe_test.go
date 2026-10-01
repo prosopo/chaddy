@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -13,15 +14,19 @@ import (
 func fakeSidecar(t *testing.T, response []byte) string {
 	t.Helper()
 
-	// Unix socket paths are capped near 100 bytes, and t.TempDir() under a
-	// long test name can exceed that.
-	dir, err := net.ResolveUnixAddr("unix", filepath.Join(t.TempDir(), "p.sock"))
+	// Not t.TempDir(): it embeds the test name, and a Unix socket path is
+	// capped near 100 bytes, so a descriptive subtest name is enough to make
+	// bind() fail with EINVAL.
+	dir, err := os.MkdirTemp("", "chaddy")
 	if err != nil {
-		t.Fatalf("resolve socket addr: %v", err)
+		t.Fatalf("temp dir: %v", err)
 	}
-	listener, err := net.ListenUnix("unix", dir)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	path := filepath.Join(dir, "p.sock")
+	listener, err := net.Listen("unix", path)
 	if err != nil {
-		t.Fatalf("listen on %s: %v", dir.Name, err)
+		t.Fatalf("listen on %s: %v", path, err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 
@@ -38,7 +43,7 @@ func fakeSidecar(t *testing.T, response []byte) string {
 		}
 	}()
 
-	return dir.Name
+	return path
 }
 
 func lookup(t *testing.T, response []byte) (*HandshakeRecord, error) {
@@ -118,16 +123,17 @@ func TestLookupHandshakeReadsEveryFieldOfTheCurrentRecord(t *testing.T) {
 // The regression this file exists for. The previous reader asked
 // io.ReadFull for 80 bytes, which SUCCEEDS against a 104-byte record, so
 // it parsed the old offsets out of the new layout and wrote
-// plausible-looking wrong integers with nothing logged. Both directions of
-// skew must now be refused rather than parsed.
+// plausible-looking wrong integers with nothing logged. A record whose size
+// matches no known layout must be refused rather than parsed.
 func TestLookupHandshakeRefusesARecordOfTheWrongSize(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		size int
 	}{
-		{"an older 80-byte sidecar", 80},
 		{"a newer, longer sidecar", 128},
 		{"a truncated record", 40},
+		{"one byte short of the current layout", 103},
+		{"one byte past the legacy layout", 81},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			response := make([]byte, c.size)
@@ -150,20 +156,126 @@ func TestLookupHandshakeRefusesARecordOfTheWrongSize(t *testing.T) {
 	}
 }
 
-func TestLookupHandshakeReportsBothSizesInTheMismatchError(t *testing.T) {
-	response := make([]byte, 80)
+func TestLookupHandshakeReportsEverySizeInTheMismatchError(t *testing.T) {
+	response := make([]byte, 128)
 	binary.LittleEndian.PutUint64(response[offSynNs:], 1_000_000_000)
 
 	_, err := lookup(t, response)
 	if err == nil {
 		t.Fatal("want an error")
 	}
-	// Whoever reads this log line needs both numbers to know which side is
-	// stale, so they are part of the contract.
-	for _, want := range []string{"80", "104"} {
+	// Whoever reads this log line needs the size that arrived and the sizes
+	// this build understands, or they cannot tell which side is stale.
+	for _, want := range []string{"128", "80", "104"} {
 		if !contains(err.Error(), want) {
 			t.Errorf("error %q does not report %s", err, want)
 		}
+	}
+}
+
+// legacyRecord builds the 80-byte record the published sidecar image still
+// serves, with a distinct value in every field it carries.
+func legacyRecord() []byte {
+	rec := make([]byte, probeRespSizeLegacy)
+	binary.LittleEndian.PutUint64(rec[offSynNs:], 2_000_000_000)
+	binary.LittleEndian.PutUint64(rec[offSynackNs:], 2_000_060_000)
+	binary.LittleEndian.PutUint64(rec[offAckNs:], 2_000_130_000)
+	binary.LittleEndian.PutUint16(rec[offLegacyTcpWindow:], 65535)
+	binary.LittleEndian.PutUint16(rec[offLegacyTcpMss:], 1452)
+	rec[offLegacyTcpWscale] = 8
+	rec[offLegacyTcpOptsFlags] = 0x1f
+	binary.LittleEndian.PutUint32(rec[offLegacyTcpOptsOrder:], 123456)
+	rec[offLegacySynTtl] = 118
+	return rec
+}
+
+// Supported rather than refused: this is what the published sidecar image
+// serves, and refusing it would drop every TCP signal on every pronode from
+// the moment chaddy rolls out until a new image exists.
+func TestLookupHandshakeStillReadsTheLegacy80ByteRecord(t *testing.T) {
+	rec, err := lookup(t, legacyRecord())
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("a legacy record with syn_ns set is a hit")
+	}
+	if !rec.Legacy {
+		t.Error("Legacy must say which layout was read")
+	}
+
+	for _, c := range []struct {
+		field string
+		got   uint64
+		want  uint64
+	}{
+		{"SynNs", rec.SynNs, 2_000_000_000},
+		{"SynackNs", rec.SynackNs, 2_000_060_000},
+		{"AckNs", rec.AckNs, 2_000_130_000},
+		// 118 lives at offset 38 in this layout and 94 in the current one;
+		// reading the wrong offset yields 0, so this pins the dispatch.
+		{"ObservedTtl", uint64(rec.ObservedTtl), 118},
+		{"TcpWindow", uint64(rec.TcpWindow), 65535},
+		{"TcpMss", uint64(rec.TcpMss), 1452},
+		{"TcpWscale", uint64(rec.TcpWscale), 8},
+		{"TcpOptsFlags", uint64(rec.TcpOptsFlags), 0x1f},
+		{"TcpOptsOrder", uint64(rec.TcpOptsOrder), 123456},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want %d", c.field, c.got, c.want)
+		}
+	}
+}
+
+// The 80-byte record does not carry these at all. Leaving them zero is only
+// safe because Legacy says so — otherwise a consumer reads "no options
+// recorded" as "a SYN with no options".
+func TestLegacyRecordLeavesTheFieldsItCannotCarryZero(t *testing.T) {
+	rec, err := lookup(t, legacyRecord())
+	if err != nil || rec == nil {
+		t.Fatalf("lookup: %v", err)
+	}
+
+	for _, c := range []struct {
+		field string
+		got   uint64
+	}{
+		{"TcpOptsKinds", rec.TcpOptsKinds},
+		{"TcpOptsPresent", uint64(rec.TcpOptsPresent)},
+		{"TcpOptsCount", uint64(rec.TcpOptsCount)},
+		{"TcpTsval", uint64(rec.TcpTsval)},
+		{"TcpTsecr", uint64(rec.TcpTsecr)},
+		{"TcpFlags", uint64(rec.TcpFlags)},
+		{"TcpDataOffsetResv", uint64(rec.TcpDataOffsetResv)},
+		{"TcpUrgPtr", uint64(rec.TcpUrgPtr)},
+		{"IpIdent", uint64(rec.IpIdent)},
+		{"IpTotalLen", uint64(rec.IpTotalLen)},
+		{"IpFragFlags", uint64(rec.IpFragFlags)},
+		{"IpTos", uint64(rec.IpTos)},
+	} {
+		if c.got != 0 {
+			t.Errorf("%s = %d, want 0 — the 80-byte record has no such field", c.field, c.got)
+		}
+	}
+}
+
+func TestCurrentRecordIsNotMarkedLegacy(t *testing.T) {
+	rec, err := lookup(t, currentRecord())
+	if err != nil || rec == nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if rec.Legacy {
+		t.Error("a 104-byte record is not the legacy layout")
+	}
+}
+
+func TestLookupHandshakeTreatsAnAllZeroLegacyRecordAsAMiss(t *testing.T) {
+	rec, err := lookup(t, make([]byte, probeRespSizeLegacy))
+	if err != nil {
+		t.Fatalf("a miss is not an error: %v", err)
+	}
+	if rec != nil {
+		t.Error("an all-zero legacy record is the probe's cache miss")
 	}
 }
 

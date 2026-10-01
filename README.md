@@ -112,13 +112,18 @@ current connection:
 | `X-TLS-Ip-Frag-Flags` | uint16 | Raw IPv4 flags plus fragment offset; DF is bit 14 |
 | `X-TLS-Ip-Tos` | uint8 | DSCP in the high 6 bits, ECN codepoint in the low 2 |
 
-`X-TLS-Tcp-Opts-Kinds` and `X-TLS-Tcp-Opts-Present` replace the
+`X-TLS-Tcp-Opts-Kinds` and `X-TLS-Tcp-Opts-Present` supersede the
 `X-TLS-Tcp-Opts-Order` and `X-TLS-Tcp-Opts-Flags` headers of the 80-byte
 record. The old order field packed 4 bits per option, which aliased MSS
 onto Fast Open and Window Scale onto MD5 and could not name MPTCP at all;
 the new one carries full kind numbers. They are new header names rather
-than the old ones carrying new meanings, so that no consumer can keep
-reading a column whose contents changed underneath it.
+than the old ones carrying new meanings, so no consumer can keep reading a
+column whose contents changed underneath it.
+
+Exactly one of the two pairs is sent, never both: the new names when the
+probe served a 104-byte record, the old pair when it served an 80-byte one.
+Which headers arrive is therefore also the statement of which layout the
+values came from.
 
 Kernel ns timestamps are boot-relative on the probe host, so only their
 deltas within a single connection are meaningful.
@@ -129,13 +134,18 @@ omitted for that request.
 
 **Wire protocol** expected on the socket: a 12-byte big-endian request
 (`client_ip[4] client_port[2] server_ip[4] server_port[2]`, server side
-is ignored / for future use), and a 104-byte fixed-size response — see
-`tcpProbe.go` for the exact layout. Prosopo's `tcp-probe` binary is
+is ignored / for future use), and a 104-byte fixed-size response (or the
+80-byte predecessor) — see `tcpProbe.go` for both layouts. Prosopo's `tcp-probe` binary is
 the reference implementation, but any probe that speaks the same
 protocol works.
 
-A response of any size other than 104 bytes is **refused, not parsed**,
-and logged at error with both sizes. The record carries no length or
-version of its own, so chaddy and the probe have to be deployed as a
-pair; refusing is what makes a mismatched pair visible instead of
-producing wrong values that still look like integers.
+Both the current 104-byte record and its 80-byte predecessor are read;
+the length tells them apart with no ambiguity, so there is no need to
+deploy chaddy and the probe as a pair. On the 80-byte record the fields
+it does not carry are simply not sent, rather than sent as zero.
+
+A response of any **other** size is refused, not parsed, and logged at
+error with the size that arrived and the sizes this build understands.
+The record carries no length or version of its own, so that comparison is
+the only thing standing between a future field addition and a column full
+of plausible-looking wrong integers.
