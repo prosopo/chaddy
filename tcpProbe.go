@@ -96,6 +96,21 @@ type HandshakeRecord struct {
 	// IpTos carries DSCP in the high 6 bits and the ECN codepoint in the
 	// low 2 (IpTosEcnMask).
 	IpTos uint8
+
+	// ---- legacy 80-byte record only ----
+	// A sidecar older than the 104-byte record sends these two instead of
+	// TcpOptsKinds / TcpOptsPresent, and sends none of the IPv4 header
+	// fields, the Timestamps values or the TCP header bytes. Legacy says
+	// which set is populated; it is the only honest way to tell a real
+	// zero from a field the sidecar never sent.
+	Legacy bool
+	// TcpOptsFlags is an opaque presence bitfield, narrower than
+	// TcpOptsPresent and with a different bit assignment.
+	TcpOptsFlags uint8
+	// TcpOptsOrder packs 4 bits per option kind for the first eight
+	// options, which aliases MSS onto Fast Open and Window Scale onto MD5
+	// and cannot represent MPTCP. TcpOptsKinds supersedes it.
+	TcpOptsOrder uint32
 }
 
 // Bits for HandshakeRecord.TcpOptsPresent. Mirrors the OPT_* constants in
@@ -142,19 +157,22 @@ const WscaleAbsent uint8 = 255
 // on if the lookup misses this budget.
 const ProbeLookupTimeout = 50 * time.Millisecond
 
-// ErrRecordSizeMismatch reports that the sidecar's record is not the size
-// this build knows how to parse, which means the two are deployed at
-// different versions. Callers must surface it as an error rather than
-// folding it into the ordinary miss path: it is a deployment fault that
-// needs a human, and the previous reader could not see it at all.
+// ErrRecordSizeMismatch reports a record whose size matches no layout this
+// build knows. Callers must surface it as an error rather than folding it
+// into the ordinary miss path: it is a deployment fault that needs a human,
+// and the reader this replaced could not see it at all.
 //
 // That reader asked io.ReadFull for exactly 80 bytes, which SUCCEEDS
 // against a 104-byte record — it gets the 80 bytes it asked for and the
 // short-read branch never fires. It then parsed the old offsets out of
 // the new layout, so TcpWindow read the low half of TcpOptsKinds and
 // TcpOptsOrder read TcpTsval, and the result was plausible-looking wrong
-// integers rather than an absence. Reading to EOF and comparing the
-// length is what makes both directions of skew impossible to miss.
+// integers rather than an absence.
+//
+// Reading to EOF and dispatching on the length is what makes that
+// impossible. The length is also sufficient to tell the two layouts apart,
+// which is why both can be supported rather than one refused: the record
+// carries no version of its own, but its size is unambiguous.
 var ErrRecordSizeMismatch = errors.New("tcp probe handshake record size mismatch")
 
 // Wire layout — 12-byte big-endian request, 104-byte native-endian
@@ -190,6 +208,30 @@ var ErrRecordSizeMismatch = errors.New("tcp probe handshake record size mismatch
 //	tcp_opts_count        99
 //	_pad1[2]              100..102
 //	(2-byte trailing pad → total 104 for struct 8-alignment)
+//
+// The 80-byte predecessor, still what the published sidecar image serves.
+// Its first 64 bytes are identical; from there it carried only the five
+// JA4T inputs:
+//
+//	syn_ttl     38          <-- note: 94 in the 104-byte record
+//	tcp_window  64..66
+//	tcp_mss     66..68
+//	tcp_wscale  68
+//	opts_flags  69
+//	(2 bytes pad to align u32)
+//	opts_order  72..76
+//	(4 bytes trailing pad → total 80)
+const (
+	probeRespSizeLegacy = 80
+
+	offLegacySynTtl       = 38
+	offLegacyTcpWindow    = 64
+	offLegacyTcpMss       = 66
+	offLegacyTcpWscale    = 68
+	offLegacyTcpOptsFlags = 69
+	offLegacyTcpOptsOrder = 72
+)
+
 const (
 	probeReqSize  = 12
 	probeRespSize = 104
@@ -271,14 +313,30 @@ func LookupHandshake(socketPath string, clientIP net.IP, clientPort uint16) (*Ha
 	if err != nil {
 		return nil, fmt.Errorf("read probe response: %w", err)
 	}
-	if len(resp) != probeRespSize {
+	var rec HandshakeRecord
+	switch len(resp) {
+	case probeRespSize:
+		rec = parseCurrent(resp)
+	case probeRespSizeLegacy:
+		rec = parseLegacy(resp)
+	default:
 		return nil, fmt.Errorf(
-			"%w: sidecar sent %d bytes, this build parses %d",
-			ErrRecordSizeMismatch, len(resp), probeRespSize,
+			"%w: sidecar sent %d bytes, this build parses %d or %d",
+			ErrRecordSizeMismatch, len(resp), probeRespSizeLegacy, probeRespSize,
 		)
 	}
 
-	rec := HandshakeRecord{
+	// The probe returns an all-zero record on cache miss. A real hit
+	// always has SynNs > 0 (from bpf_ktime_get_ns on a completed
+	// handshake), so treating "SynNs == 0" as miss is safe.
+	if rec.SynNs == 0 {
+		return nil, nil
+	}
+	return &rec, nil
+}
+
+func parseCurrent(resp []byte) HandshakeRecord {
+	return HandshakeRecord{
 		ObservedTtl:       resp[offSynTtl],
 		SynNs:             binary.LittleEndian.Uint64(resp[offSynNs : offSynNs+8]),
 		SynackNs:          binary.LittleEndian.Uint64(resp[offSynackNs : offSynackNs+8]),
@@ -299,14 +357,31 @@ func LookupHandshake(socketPath string, clientIP net.IP, clientPort uint16) (*Ha
 		IpFragFlags:       binary.LittleEndian.Uint16(resp[offIpFragFlags : offIpFragFlags+2]),
 		IpTos:             resp[offIpTos],
 	}
+}
 
-	// The probe returns an all-zero record on cache miss. A real hit
-	// always has SynNs > 0 (from bpf_ktime_get_ns on a completed
-	// handshake), so treating "SynNs == 0" as miss is safe.
-	if rec.SynNs == 0 {
-		return nil, nil
+// parseLegacy reads the 80-byte record. Supported, rather than refused,
+// because that is what the published sidecar image still serves: refusing it
+// would drop every TCP signal on every pronode from the moment chaddy rolls
+// out until a new image is built and deployed, and the workflow that would
+// build one is itself broken (prosopo/Protect#1181). The length tells the two
+// layouts apart with no ambiguity, so reading both costs nothing in safety.
+//
+// Fields the 80-byte record does not carry are left zero and `Legacy`
+// records that it did not carry them, so a consumer never has to read a zero
+// as an observation.
+func parseLegacy(resp []byte) HandshakeRecord {
+	return HandshakeRecord{
+		Legacy:       true,
+		ObservedTtl:  resp[offLegacySynTtl],
+		SynNs:        binary.LittleEndian.Uint64(resp[offSynNs : offSynNs+8]),
+		SynackNs:     binary.LittleEndian.Uint64(resp[offSynackNs : offSynackNs+8]),
+		AckNs:        binary.LittleEndian.Uint64(resp[offAckNs : offAckNs+8]),
+		TcpWindow:    binary.LittleEndian.Uint16(resp[offLegacyTcpWindow : offLegacyTcpWindow+2]),
+		TcpMss:       binary.LittleEndian.Uint16(resp[offLegacyTcpMss : offLegacyTcpMss+2]),
+		TcpWscale:    resp[offLegacyTcpWscale],
+		TcpOptsFlags: resp[offLegacyTcpOptsFlags],
+		TcpOptsOrder: binary.LittleEndian.Uint32(resp[offLegacyTcpOptsOrder : offLegacyTcpOptsOrder+4]),
 	}
-	return &rec, nil
 }
 
 // HasOption reports whether the SYN carried the option named by one of

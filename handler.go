@@ -191,30 +191,36 @@ func (h *ClientHelloHandler) injectTcpProbeHeaders(req *http.Request) {
 	req.Header.Set("X-TLS-Tcp-Wscale", strconv.FormatUint(uint64(rec.TcpWscale), 10))
 	req.Header.Set("X-TLS-Tcp-Window", strconv.FormatUint(uint64(rec.TcpWindow), 10))
 
-	// Replaces X-TLS-Tcp-Opts-Order and X-TLS-Tcp-Opts-Flags, which named
-	// fields the 104-byte record no longer has. Deliberately new names
-	// rather than the old ones carrying new meanings: reusing a name for a
-	// differently-encoded value is how a column silently changes what it
-	// holds, which is the failure this whole change exists to stop.
-	req.Header.Set("X-TLS-Tcp-Opts-Kinds", strconv.FormatUint(rec.TcpOptsKinds, 10))
-	req.Header.Set("X-TLS-Tcp-Opts-Present", strconv.FormatUint(uint64(rec.TcpOptsPresent), 10))
-	req.Header.Set("X-TLS-Tcp-Opts-Count", strconv.FormatUint(uint64(rec.TcpOptsCount), 10))
-	req.Header.Set("X-TLS-Tcp-Flags", strconv.FormatUint(uint64(rec.TcpFlags), 10))
-	req.Header.Set("X-TLS-Tcp-Data-Offset-Resv", strconv.FormatUint(uint64(rec.TcpDataOffsetResv), 10))
-	req.Header.Set("X-TLS-Tcp-Urg-Ptr", strconv.FormatUint(uint64(rec.TcpUrgPtr), 10))
-	req.Header.Set("X-TLS-Ip-Ident", strconv.FormatUint(uint64(rec.IpIdent), 10))
-	req.Header.Set("X-TLS-Ip-Total-Len", strconv.FormatUint(uint64(rec.IpTotalLen), 10))
-	req.Header.Set("X-TLS-Ip-Frag-Flags", strconv.FormatUint(uint64(rec.IpFragFlags), 10))
-	req.Header.Set("X-TLS-Ip-Tos", strconv.FormatUint(uint64(rec.IpTos), 10))
+	// Only the header set the record actually carries. An 80-byte sidecar
+	// has no option kinds, no Timestamps values and no IPv4 header fields;
+	// sending zeros for them would publish "not sent" as an observation of
+	// zero, which is the class of bug this reader exists to avoid.
+	if rec.Legacy {
+		req.Header.Set("X-TLS-Tcp-Opts-Flags", strconv.FormatUint(uint64(rec.TcpOptsFlags), 10))
+		req.Header.Set("X-TLS-Tcp-Opts-Order", strconv.FormatUint(uint64(rec.TcpOptsOrder), 10))
+	} else {
+		// New names rather than the old ones carrying new meanings:
+		// reusing a name for a differently-encoded value is how a column
+		// silently changes what it holds.
+		req.Header.Set("X-TLS-Tcp-Opts-Kinds", strconv.FormatUint(rec.TcpOptsKinds, 10))
+		req.Header.Set("X-TLS-Tcp-Opts-Present", strconv.FormatUint(uint64(rec.TcpOptsPresent), 10))
+		req.Header.Set("X-TLS-Tcp-Opts-Count", strconv.FormatUint(uint64(rec.TcpOptsCount), 10))
+		req.Header.Set("X-TLS-Tcp-Flags", strconv.FormatUint(uint64(rec.TcpFlags), 10))
+		req.Header.Set("X-TLS-Tcp-Data-Offset-Resv", strconv.FormatUint(uint64(rec.TcpDataOffsetResv), 10))
+		req.Header.Set("X-TLS-Tcp-Urg-Ptr", strconv.FormatUint(uint64(rec.TcpUrgPtr), 10))
+		req.Header.Set("X-TLS-Ip-Ident", strconv.FormatUint(uint64(rec.IpIdent), 10))
+		req.Header.Set("X-TLS-Ip-Total-Len", strconv.FormatUint(uint64(rec.IpTotalLen), 10))
+		req.Header.Set("X-TLS-Ip-Frag-Flags", strconv.FormatUint(uint64(rec.IpFragFlags), 10))
+		req.Header.Set("X-TLS-Ip-Tos", strconv.FormatUint(uint64(rec.IpTos), 10))
 
-	// Gated on the presence bit rather than on the value. A TSval of
-	// exactly 0 is legal — a machine in its first tick after boot — and
-	// TSecr is *expected* to be 0 on a SYN, so zero cannot stand for
-	// absent. Sending these when the option was not on the SYN would
-	// publish uninitialised fields as observations.
-	if rec.HasOption(OptTimestamps) {
-		req.Header.Set("X-TLS-Tcp-Tsval", strconv.FormatUint(uint64(rec.TcpTsval), 10))
-		req.Header.Set("X-TLS-Tcp-Tsecr", strconv.FormatUint(uint64(rec.TcpTsecr), 10))
+		// Gated on the presence bit rather than on the value. A TSval of
+		// exactly 0 is legal — a machine in its first tick after boot —
+		// and TSecr is *expected* to be 0 on a SYN, so zero cannot stand
+		// for absent.
+		if rec.HasOption(OptTimestamps) {
+			req.Header.Set("X-TLS-Tcp-Tsval", strconv.FormatUint(uint64(rec.TcpTsval), 10))
+			req.Header.Set("X-TLS-Tcp-Tsecr", strconv.FormatUint(uint64(rec.TcpTsecr), 10))
+		}
 	}
 
 	h.log.Debug("Added TCP handshake headers",
@@ -224,6 +230,7 @@ func (h *ClientHelloHandler) injectTcpProbeHeaders(req *http.Request) {
 		zap.Uint8("tcp_wscale", rec.TcpWscale),
 		zap.Uint16("tcp_opts_present", rec.TcpOptsPresent),
 		zap.Uint8("tcp_opts_count", rec.TcpOptsCount),
+		zap.Bool("legacy_record", rec.Legacy),
 	)
 }
 
