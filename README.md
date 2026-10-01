@@ -98,9 +98,27 @@ current connection:
 | `X-TLS-Observed-Ttl` | uint8 | TTL byte of the client's SYN |
 | `X-TLS-Tcp-Mss` | uint16 | TCP MSS option value from the client's SYN |
 | `X-TLS-Tcp-Wscale` | uint8 | TCP Window-Scale shift from the client's SYN |
-| `X-TLS-Tcp-Opts-Flags` | uint8 | Bitfield of TCP option presence (opaque; probe-defined) |
-| `X-TLS-Tcp-Opts-Order` | uint32 | Packed encoding of TCP option order (opaque; probe-defined) |
-| `X-TLS-Tcp-Window` | uint16 | TCP window field from the client's SYN |
+| `X-TLS-Tcp-Window` | uint16 | TCP window field from the client's SYN, before scaling |
+| `X-TLS-Tcp-Opts-Kinds` | uint64 | IANA kind number of each TCP option on the SYN, in wire order, one byte per option, least-significant byte first, for the first 8 options |
+| `X-TLS-Tcp-Opts-Present` | uint16 | Bitfield of which TCP options were seen, including ones whose value is not recorded (MPTCP, Fast Open, MD5) |
+| `X-TLS-Tcp-Opts-Count` | uint8 | Total options on the SYN, saturating at 255. More than 8 means `Opts-Kinds` is truncated |
+| `X-TLS-Tcp-Tsval` | uint32 | Timestamps option TSval. Sent only when the Timestamps option was present |
+| `X-TLS-Tcp-Tsecr` | uint32 | Timestamps option TSecr. Sent only when the Timestamps option was present |
+| `X-TLS-Tcp-Flags` | uint8 | Raw TCP flag byte (CWR 0x80, ECE 0x40 … SYN 0x02, FIN 0x01) |
+| `X-TLS-Tcp-Data-Offset-Resv` | uint8 | Data offset in the high nibble, reserved bits plus NS in the low |
+| `X-TLS-Tcp-Urg-Ptr` | uint16 | TCP urgent pointer. Non-zero on a SYN is malformed |
+| `X-TLS-Ip-Ident` | uint16 | IPv4 identification field |
+| `X-TLS-Ip-Total-Len` | uint16 | IPv4 total length, i.e. the size class of the SYN |
+| `X-TLS-Ip-Frag-Flags` | uint16 | Raw IPv4 flags plus fragment offset; DF is bit 14 |
+| `X-TLS-Ip-Tos` | uint8 | DSCP in the high 6 bits, ECN codepoint in the low 2 |
+
+`X-TLS-Tcp-Opts-Kinds` and `X-TLS-Tcp-Opts-Present` replace the
+`X-TLS-Tcp-Opts-Order` and `X-TLS-Tcp-Opts-Flags` headers of the 80-byte
+record. The old order field packed 4 bits per option, which aliased MSS
+onto Fast Open and Window Scale onto MD5 and could not name MPTCP at all;
+the new one carries full kind numbers. They are new header names rather
+than the old ones carrying new meanings, so that no consumer can keep
+reading a column whose contents changed underneath it.
 
 Kernel ns timestamps are boot-relative on the probe host, so only their
 deltas within a single connection are meaningful.
@@ -111,7 +129,13 @@ omitted for that request.
 
 **Wire protocol** expected on the socket: a 12-byte big-endian request
 (`client_ip[4] client_port[2] server_ip[4] server_port[2]`, server side
-is ignored / for future use), and an 80-byte fixed-size response — see
-`tcpProbe.go` for the exact layout. Prosopo's `ja4l-probe` binary is
+is ignored / for future use), and a 104-byte fixed-size response — see
+`tcpProbe.go` for the exact layout. Prosopo's `tcp-probe` binary is
 the reference implementation, but any probe that speaks the same
 protocol works.
+
+A response of any size other than 104 bytes is **refused, not parsed**,
+and logged at error with both sizes. The record carries no length or
+version of its own, so chaddy and the probe have to be deployed as a
+pair; refusing is what makes a mismatched pair visible instead of
+producing wrong values that still look like integers.

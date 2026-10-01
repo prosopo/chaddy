@@ -26,9 +26,11 @@ type Config struct {
 	//
 	// Wire protocol expected on the socket: 12-byte big-endian request
 	// (client_ip[4], client_port[2], server_ip[4], server_port[2]),
-	// 80-byte fixed-size response (see tcpProbe.go for the layout).
-	// prosopo's ja4l-probe binary is the reference implementation but
-	// any probe that speaks the same protocol works.
+	// 104-byte fixed-size response (see tcpProbe.go for the layout).
+	// prosopo's tcp-probe binary is the reference implementation but
+	// any probe that speaks the same protocol works. A response of any
+	// other size is refused rather than parsed — the two are versioned
+	// together.
 	TcpProbeSocket string `json:"tcp_probe_socket,omitempty"`
 }
 
