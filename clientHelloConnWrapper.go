@@ -18,10 +18,11 @@ type ClientHelloConnWrapper struct {
 	done   bool
 	cache *Cache
 	connectionStart time.Time // when listener.Accept() returned — plumbed in so Read can compute tcp_to_chello_us
+	tcpProbeSocket  string
 }
 
 // NewClientHelloConnWrapper creates a new wrapper
-func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger, connectionStart time.Time) *ClientHelloConnWrapper {
+func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger, connectionStart time.Time, tcpProbeSocket string) *ClientHelloConnWrapper {
 	// create a buffered reader for the conn
 	bufferedReader := bufio.NewReaderSize(conn, 65536) // 64KB buffer, the max size of a TLS record
 	return &ClientHelloConnWrapper{
@@ -31,6 +32,7 @@ func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger, con
 		done:   false, // we haven't read the client hello yet
 		cache: cache,
 		connectionStart: connectionStart,
+		tcpProbeSocket:  tcpProbeSocket,
 	}
 }
 
@@ -96,8 +98,26 @@ func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 	r.cache.SetClientHello(addr, encoded)
 	r.cache.SetTiming(addr, r.connectionStart, clientHelloReceived)
 
+	// The probe's record is only guaranteed fresh now, and a preconnected
+	// connection can wait longer than its ten-second lifetime before the
+	// first request arrives. Off the read path, so the handshake does not
+	// wait on the sidecar.
+	if r.tcpProbeSocket != "" {
+		go r.primeHandshake(addr)
+	}
+
 	// delegate the original read call to the buffered reader
 	return r.bufferedReader.Read(b)
+}
+
+func (r *ClientHelloConnWrapper) primeHandshake(addr string) {
+	tcpAddr, ok := r.Conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return
+	}
+	if _, err := connectionHandshake(r.cache, r.tcpProbeSocket, addr, tcpAddr.IP, uint16(tcpAddr.Port)); err != nil {
+		r.log.Debug("TCP probe lookup at ClientHello failed", zap.String("addr", addr), zap.Error(err))
+	}
 }
 
 // Close closes the connection

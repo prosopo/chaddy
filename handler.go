@@ -163,7 +163,7 @@ func (h *ClientHelloHandler) injectTcpProbeHeaders(req *http.Request) {
 		return
 	}
 
-	rec, err := LookupHandshake(h.config.TcpProbeSocket, clientIP, uint16(portInt))
+	rec, err := connectionHandshake(h.cache, h.config.TcpProbeSocket, req.RemoteAddr, clientIP, uint16(portInt))
 	if err != nil {
 		if errors.Is(err, ErrRecordSizeMismatch) {
 			h.logRecordSizeMismatch(err)
