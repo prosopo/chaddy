@@ -32,15 +32,21 @@ type TimingEntry struct {
 type Cache struct {
 	clientHellos map[string]CacheEntry
 	timings      map[string]TimingEntry
+	handshakes   map[string]HandshakeRecord
 	lock         sync.RWMutex
 	logger *zap.Logger
 }
 
 func (c *Cache) Provision(ctx caddy.Context) error {
+	c.init(ctx.Logger(c))
+	return nil
+}
+
+func (c *Cache) init(logger *zap.Logger) {
 	c.clientHellos = make(map[string]CacheEntry)
 	c.timings = make(map[string]TimingEntry)
-	c.logger = ctx.Logger(c)
-	return nil
+	c.handshakes = make(map[string]HandshakeRecord)
+	c.logger = logger
 }
 
 func (c *Cache) SetClientHello(addr string, encoded string) {
@@ -61,6 +67,7 @@ func (c *Cache) ClearClientHello(addr string) {
 	defer c.lock.Unlock()
 	delete(c.clientHellos, addr)
 	delete(c.timings, addr)
+	delete(c.handshakes, addr)
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
 
@@ -89,6 +96,29 @@ func (c *Cache) GetTiming(addr string) *TimingEntry {
 		return nil
 	}
 	return &entry
+}
+
+// SetHandshakeIfOpen keeps a connection's TCP handshake record for the rest
+// of its life. It stores nothing once the connection has closed: a lookup
+// still in flight at close would otherwise leave a record behind for the
+// next connection that happens to reuse the same address.
+func (c *Cache) SetHandshakeIfOpen(addr string, rec HandshakeRecord) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if _, open := c.clientHellos[addr]; !open {
+		return
+	}
+	c.handshakes[addr] = rec
+}
+
+func (c *Cache) GetHandshake(addr string) *HandshakeRecord {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	rec, found := c.handshakes[addr]
+	if !found {
+		return nil
+	}
+	return &rec
 }
 
 func (c *Cache) GetClientHello(addr string) *string {

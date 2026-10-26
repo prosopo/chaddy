@@ -335,6 +335,24 @@ func LookupHandshake(socketPath string, clientIP net.IP, clientPort uint16) (*Ha
 	return &rec, nil
 }
 
+// connectionHandshake returns the handshake record for one connection,
+// asking the probe only until it has an answer.
+//
+// The probe keeps a record for ten seconds after the handshake, while a
+// connection carries requests for minutes. Looked up per request, every
+// request after the first ten seconds of a connection came back empty, so
+// the first hit is kept for as long as the connection stays open.
+func connectionHandshake(cache *Cache, socketPath, addr string, clientIP net.IP, clientPort uint16) (*HandshakeRecord, error) {
+	if rec := cache.GetHandshake(addr); rec != nil {
+		return rec, nil
+	}
+	rec, err := LookupHandshake(socketPath, clientIP, clientPort)
+	if rec != nil {
+		cache.SetHandshakeIfOpen(addr, *rec)
+	}
+	return rec, err
+}
+
 func parseCurrent(resp []byte) HandshakeRecord {
 	return HandshakeRecord{
 		ObservedTtl:       resp[offSynTtl],
