@@ -1,4 +1,4 @@
-package chaddy
+package caddy_clienthello
 
 import (
 	"net"
