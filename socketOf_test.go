@@ -58,3 +58,18 @@ func TestSocketOfOpaqueConnIsNil(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestIsNoRecord(t *testing.T) {
+	if !isNoRecord([]byte(`{"v":2,"hit":false,"reason":"no_record"}`)) {
+		t.Error("no_record not recognised")
+	}
+	if isNoRecord([]byte(`{"v":2,"hit":true}`)) {
+		t.Error("hit read as a miss")
+	}
+}
+
+func TestLookupV2ByAddressRejectsBadAddress(t *testing.T) {
+	if _, err := lookupV2ByAddress("/nonexistent", "not-an-address"); err == nil {
+		t.Error("expected an error")
+	}
+}
