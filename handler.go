@@ -81,7 +81,9 @@ func (h *ClientHelloHandler) UnmarshalCaddyfile(_ *caddyfile.Dispenser) error {
 func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
 	h.log.Debug("ClientHelloHandler: ServeHTTP")
 
-	if req.TLS.HandshakeComplete && req.ProtoMajor < 3 { // Check that this uses TLS and < HTTP/3
+	stripForgedHeaders(req.Header)
+
+	if req.TLS != nil && req.TLS.HandshakeComplete && req.ProtoMajor < 3 { // Check that this uses TLS and < HTTP/3
 		// get the client hello for the connection (which is cached by the remote addr, which is unique per connection)
 		clientHello := h.cache.GetClientHello(req.RemoteAddr)
 
@@ -132,10 +134,28 @@ func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request
 		// what (if anything) to derive.
 		if h.config.TcpProbeSocket != "" {
 			h.injectTcpProbeHeaders(req)
+			h.injectProbeV2Header(req)
 		}
 	}
 
 	return next.ServeHTTP(rw, req)
+}
+
+// injectProbeV2Header always sets the header: a miss is itself a signal.
+func (h *ClientHelloHandler) injectProbeV2Header(req *http.Request) {
+	body := v2Unavailable
+	if conn := h.cache.GetConn(req.RemoteAddr); conn != nil {
+		answer, err := lookupV2(h.config.TcpProbeSocket, conn)
+		if err == nil && isNoRecord(answer) {
+			answer, err = lookupV2ByAddress(h.config.TcpProbeSocket, req.RemoteAddr)
+		}
+		if err != nil {
+			h.log.Debug("TCP probe v2 lookup failed", zap.String("addr", req.RemoteAddr), zap.Error(err))
+		} else {
+			body = answer
+		}
+	}
+	req.Header.Set(TcpProbeHeader, encodeProbe(body))
 }
 
 // injectTcpProbeHeaders looks up the raw TCP handshake record for the
