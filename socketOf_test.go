@@ -22,7 +22,7 @@ func (w netConnWrapper) NetConn() net.Conn { return w.inner }
 
 type plainConn struct{ net.Conn }
 
-func tcpConn(t *testing.T) *net.TCPConn {
+func dialedTCP(t *testing.T) *net.TCPConn {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -38,7 +38,7 @@ func tcpConn(t *testing.T) *net.TCPConn {
 }
 
 func TestSocketOfUnwraps(t *testing.T) {
-	tcp := tcpConn(t)
+	tcp := dialedTCP(t)
 	cases := map[string]net.Conn{
 		"bare":    tcp,
 		"raw":     rawWrapper{inner: tcp},
