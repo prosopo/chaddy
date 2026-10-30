@@ -1,6 +1,7 @@
 package caddy_clienthello
 
 import (
+	"syscall"
 	"sync"
 	"time"
 
@@ -33,6 +34,7 @@ type Cache struct {
 	clientHellos map[string]CacheEntry
 	timings      map[string]TimingEntry
 	handshakes   map[string]HandshakeRecord
+	conns        map[string]syscall.Conn
 	lock         sync.RWMutex
 	logger *zap.Logger
 }
@@ -46,6 +48,7 @@ func (c *Cache) init(logger *zap.Logger) {
 	c.clientHellos = make(map[string]CacheEntry)
 	c.timings = make(map[string]TimingEntry)
 	c.handshakes = make(map[string]HandshakeRecord)
+	c.conns = make(map[string]syscall.Conn)
 	c.logger = logger
 }
 
@@ -68,6 +71,7 @@ func (c *Cache) ClearClientHello(addr string) {
 	delete(c.clientHellos, addr)
 	delete(c.timings, addr)
 	delete(c.handshakes, addr)
+	delete(c.conns, addr)
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
 
@@ -119,6 +123,20 @@ func (c *Cache) GetHandshake(addr string) *HandshakeRecord {
 		return nil
 	}
 	return &rec
+}
+
+// SetConn remembers the connection's socket so each request can pass it to
+// tcp-probe. Cleared on close, so a reused address never finds the old socket.
+func (c *Cache) SetConn(addr string, conn syscall.Conn) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.conns[addr] = conn
+}
+
+func (c *Cache) GetConn(addr string) syscall.Conn {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	return c.conns[addr]
 }
 
 func (c *Cache) GetClientHello(addr string) *string {

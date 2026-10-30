@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"net"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -97,6 +98,9 @@ func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 	addr := r.Conn.RemoteAddr().String()
 	r.cache.SetClientHello(addr, encoded)
 	r.cache.SetTiming(addr, r.connectionStart, clientHelloReceived)
+	if sc, ok := r.Conn.(syscall.Conn); ok {
+		r.cache.SetConn(addr, sc)
+	}
 
 	// The probe's record is only guaranteed fresh now, and a preconnected
 	// connection can wait longer than its ten-second lifetime before the
