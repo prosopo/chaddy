@@ -98,7 +98,7 @@ func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 	addr := r.Conn.RemoteAddr().String()
 	r.cache.SetClientHello(addr, encoded)
 	r.cache.SetTiming(addr, r.connectionStart, clientHelloReceived)
-	if sc, ok := r.Conn.(syscall.Conn); ok {
+	if sc := socketOf(r.Conn); sc != nil {
 		r.cache.SetConn(addr, sc)
 	}
 
@@ -130,4 +130,23 @@ func (r *ClientHelloConnWrapper) Close() error {
 	r.cache.ClearClientHello(r.Conn.RemoteAddr().String())
 
 	return r.Conn.Close()
+}
+
+// socketOf finds the real socket beneath listener wrappers: proxy_protocol hides
+// it behind Raw(), and tls-style wrappers behind NetConn().
+func socketOf(conn net.Conn) syscall.Conn {
+	for conn != nil {
+		if sc, ok := conn.(syscall.Conn); ok {
+			return sc
+		}
+		switch wrapper := conn.(type) {
+		case interface{ Raw() net.Conn }:
+			conn = wrapper.Raw()
+		case interface{ NetConn() net.Conn }:
+			conn = wrapper.NetConn()
+		default:
+			return nil
+		}
+	}
+	return nil
 }
