@@ -33,6 +33,7 @@ type Cache struct {
 	clientHellos map[string]CacheEntry
 	timings      map[string]TimingEntry
 	handshakes   map[string]HandshakeRecord
+	handshakeRtts map[string]time.Duration
 	lock         sync.RWMutex
 	logger *zap.Logger
 }
@@ -46,6 +47,7 @@ func (c *Cache) init(logger *zap.Logger) {
 	c.clientHellos = make(map[string]CacheEntry)
 	c.timings = make(map[string]TimingEntry)
 	c.handshakes = make(map[string]HandshakeRecord)
+	c.handshakeRtts = make(map[string]time.Duration)
 	c.logger = logger
 }
 
@@ -68,6 +70,7 @@ func (c *Cache) ClearClientHello(addr string) {
 	delete(c.clientHellos, addr)
 	delete(c.timings, addr)
 	delete(c.handshakes, addr)
+	delete(c.handshakeRtts, addr)
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
 
@@ -109,6 +112,28 @@ func (c *Cache) SetHandshakeIfOpen(addr string, rec HandshakeRecord) {
 		return
 	}
 	c.handshakes[addr] = rec
+}
+
+// SetHandshakeRttIfOpen keeps the TLS handshake round trip for the rest of
+// the connection's life, with the same closed-connection guard as
+// SetHandshakeIfOpen.
+func (c *Cache) SetHandshakeRttIfOpen(addr string, rtt time.Duration) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if _, open := c.clientHellos[addr]; !open {
+		return
+	}
+	c.handshakeRtts[addr] = rtt
+}
+
+func (c *Cache) GetHandshakeRtt(addr string) *time.Duration {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	rtt, found := c.handshakeRtts[addr]
+	if !found {
+		return nil
+	}
+	return &rtt
 }
 
 func (c *Cache) GetHandshake(addr string) *HandshakeRecord {
