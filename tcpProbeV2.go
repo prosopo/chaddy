@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,7 +23,9 @@ import (
 const TcpProbeHeader = "X-TCP-Probe"
 
 const (
-	v2Deadline = 50 * time.Millisecond
+	// 50ms lost 32 of 172 lookups in a burst on a 6-core staging pronode. It only
+	// bounds the failure case, so it can be generous: a healthy lookup returns early.
+	v2Deadline = 250 * time.Millisecond
 	// Far above a full answer; bounds what a misbehaving sidecar can make us read.
 	v2MaxResponse = 64 * 1024
 )
@@ -47,6 +50,12 @@ func unavailableAnswer(err error) []byte {
 		detail = "conn_closed"
 	default:
 		detail = "error"
+		var errno syscall.Errno
+		if errors.As(err, &errno) {
+			detail = "errno_" + strconv.Itoa(int(errno))
+		} else if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			detail = "eof"
+		}
 	}
 	return []byte(`{"v":2,"hit":false,"reason":"unavailable","detail":"` + detail + `"}`)
 }

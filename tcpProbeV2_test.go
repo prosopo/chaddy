@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -111,6 +112,8 @@ func TestUnavailableAnswerNamesTheFailedStep(t *testing.T) {
 		"sidecar_refused": syscall.ECONNREFUSED,
 		"conn_closed":     net.ErrClosed,
 		"error":           errors.New("other"),
+		"errno_32":        syscall.EPIPE,
+		"eof":             io.ErrUnexpectedEOF,
 	}
 	for detail, err := range cases {
 		want := `"reason":"unavailable","detail":"` + detail + `"`
