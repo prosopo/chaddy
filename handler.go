@@ -148,6 +148,12 @@ func (h *ClientHelloHandler) injectProbeV2Header(req *http.Request) {
 		answer, err := lookupV2(h.config.TcpProbeSocket, conn)
 		if err == nil && isNoRecord(answer) {
 			answer, err = lookupV2ByAddress(h.config.TcpProbeSocket, req.RemoteAddr)
+			if err == nil {
+				var infoErr error
+				if answer, infoErr = withTcpInfo(answer, queryTcpInfo); infoErr != nil {
+					h.log.Debug("TCP info lookup failed", zap.String("addr", req.RemoteAddr), zap.Error(infoErr))
+				}
+			}
 		}
 		if err != nil {
 			h.log.Debug("TCP probe v2 lookup failed", zap.String("addr", req.RemoteAddr), zap.Error(err))
