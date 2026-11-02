@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -19,6 +20,11 @@ type ClientHelloConnWrapper struct {
 	cache *Cache
 	connectionStart time.Time // when listener.Accept() returned — plumbed in so Read can compute tcp_to_chello_us
 	tcpProbeSocket  string
+
+	// Offset from connectionStart of the server's latest write, held until
+	// the client's first reply to it has been read. See Write.
+	serverFlightSentAt atomic.Int64
+	handshakeRttTaken  atomic.Bool
 }
 
 // NewClientHelloConnWrapper creates a new wrapper
@@ -41,7 +47,7 @@ func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger, con
 func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 	if r.done {
 		// we've already read the client hello, just pass through to the buffered reader
-		return r.bufferedReader.Read(b)
+		return r.readTimingHandshakeRtt(b)
 	}
 
 	r.log.Debug("Reading client hello")
@@ -108,6 +114,39 @@ func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 
 	// delegate the original read call to the buffered reader
 	return r.bufferedReader.Read(b)
+}
+
+// Write records when the server's handshake flight was handed to the kernel.
+// Only the last write before the client's reply counts, because a flight can
+// span several writes.
+func (r *ClientHelloConnWrapper) Write(b []byte) (int, error) {
+	n, err := r.Conn.Write(b)
+	if !r.handshakeRttTaken.Load() {
+		r.serverFlightSentAt.Store(int64(time.Since(r.connectionStart)))
+	}
+	return n, err
+}
+
+// readTimingHandshakeRtt times the server's handshake flight against the
+// client's reply to it: a round trip to whatever terminates TLS on the client
+// side, as opposed to the tcp-probe's SYN-ACK to ACK, which is a round trip to
+// whatever opened the TCP connection.
+//
+// Only the first read after the flight is timed. If the reply was already
+// buffered it arrived before the flight could have been answered, so there is
+// nothing honest to report and the connection goes without a value.
+func (r *ClientHelloConnWrapper) readTimingHandshakeRtt(b []byte) (int, error) {
+	sentAt := r.serverFlightSentAt.Load()
+	if sentAt == 0 || r.handshakeRttTaken.Load() {
+		return r.bufferedReader.Read(b)
+	}
+	alreadyBuffered := r.bufferedReader.Buffered() > 0
+	n, err := r.bufferedReader.Read(b)
+	if n > 0 && r.handshakeRttTaken.CompareAndSwap(false, true) && !alreadyBuffered {
+		rtt := time.Since(r.connectionStart) - time.Duration(sentAt)
+		r.cache.SetHandshakeRttIfOpen(r.Conn.RemoteAddr().String(), rtt)
+	}
+	return n, err
 }
 
 func (r *ClientHelloConnWrapper) primeHandshake(addr string) {
