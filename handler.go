@@ -143,7 +143,7 @@ func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request
 
 // injectProbeV2Header always sets the header: a miss is itself a signal.
 func (h *ClientHelloHandler) injectProbeV2Header(req *http.Request) {
-	body := v2Unavailable
+	body := unavailableAnswer(nil)
 	if conn := h.cache.GetConn(req.RemoteAddr); conn != nil {
 		answer, err := lookupV2(h.config.TcpProbeSocket, conn)
 		if err == nil && isNoRecord(answer) {
@@ -157,6 +157,7 @@ func (h *ClientHelloHandler) injectProbeV2Header(req *http.Request) {
 		}
 		if err != nil {
 			h.log.Debug("TCP probe v2 lookup failed", zap.String("addr", req.RemoteAddr), zap.Error(err))
+			body = unavailableAnswer(err)
 		} else {
 			body = answer
 		}

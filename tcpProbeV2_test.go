@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -98,5 +101,21 @@ func TestEncodeProbeIsUnpaddedBase64URL(t *testing.T) {
 	got, err := base64.RawURLEncoding.DecodeString(encodeProbe(v2Unavailable))
 	if err != nil || !bytes.Equal(got, v2Unavailable) {
 		t.Fatalf("got %s, %v", got, err)
+	}
+}
+
+func TestUnavailableAnswerNamesTheFailedStep(t *testing.T) {
+	cases := map[string]error{
+		"no_conn":         nil,
+		"timeout":         os.ErrDeadlineExceeded,
+		"sidecar_refused": syscall.ECONNREFUSED,
+		"conn_closed":     net.ErrClosed,
+		"error":           errors.New("other"),
+	}
+	for detail, err := range cases {
+		want := `"reason":"unavailable","detail":"` + detail + `"`
+		if got := string(unavailableAnswer(err)); !strings.Contains(got, want) {
+			t.Errorf("%v: got %s", err, got)
+		}
 	}
 }

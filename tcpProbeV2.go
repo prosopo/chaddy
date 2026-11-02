@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,6 +32,24 @@ var (
 	v2FlagByAddress byte = 1
 	v2Unavailable        = []byte(`{"v":2,"hit":false,"reason":"unavailable"}`)
 )
+
+// unavailableAnswer keeps reason stable for consumers; detail says which step
+// failed, because a timeout and a missing socket need different fixes.
+func unavailableAnswer(err error) []byte {
+	detail := "no_conn"
+	switch {
+	case err == nil:
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		detail = "timeout"
+	case errors.Is(err, syscall.EAGAIN), errors.Is(err, syscall.ECONNREFUSED), errors.Is(err, syscall.ENOENT):
+		detail = "sidecar_refused"
+	case errors.Is(err, syscall.EBADF), errors.Is(err, os.ErrClosed), errors.Is(err, net.ErrClosed):
+		detail = "conn_closed"
+	default:
+		detail = "error"
+	}
+	return []byte(`{"v":2,"hit":false,"reason":"unavailable","detail":"` + detail + `"}`)
+}
 
 // lookupV2 passes the connection's own socket to tcp-probe, so the answer belongs
 // to exactly this connection and cannot be another client's. A fresh lookup per
