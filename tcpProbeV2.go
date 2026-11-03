@@ -22,9 +22,11 @@ import (
 const TcpProbeHeader = "X-TCP-Probe"
 
 const (
-	// 50ms lost 32 of 172 lookups in a burst on a 6-core staging pronode. It only
-	// bounds the failure case, so it can be generous: a healthy lookup returns early.
-	v2Deadline = 250 * time.Millisecond
+	// Go checks the deadline before each read, so a goroutine starved during a TLS
+	// burst times out even with the answer already buffered: 250ms still lost 1 in
+	// 916 lookups on a 6-core staging pronode. A dead sidecar refuses at once, so
+	// this only bounds a hung one.
+	v2Deadline = time.Second
 	// Far above a full answer; bounds what a misbehaving sidecar can make us read.
 	v2MaxResponse = 64 * 1024
 )
