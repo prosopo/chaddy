@@ -122,3 +122,11 @@ func TestUnavailableAnswerNamesTheFailedStep(t *testing.T) {
 		}
 	}
 }
+
+func TestUnavailableAnswerNamesTheStage(t *testing.T) {
+	err := &stageError{"address", &stageError{"read", os.ErrDeadlineExceeded}}
+	want := `"detail":"timeout@address@read"`
+	if got := string(unavailableAnswer(err)); !strings.Contains(got, want) {
+		t.Fatalf("got %s", got)
+	}
+}

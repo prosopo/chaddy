@@ -35,6 +35,15 @@ var (
 	v2Unavailable        = []byte(`{"v":2,"hit":false,"reason":"unavailable"}`)
 )
 
+// stageError names the step of a lookup that failed, so a stall can be placed.
+type stageError struct {
+	stage string
+	err   error
+}
+
+func (e *stageError) Error() string { return e.stage + ": " + e.err.Error() }
+func (e *stageError) Unwrap() error { return e.err }
+
 // unavailableAnswer keeps reason stable for consumers; detail says which step
 // failed, because a timeout and a missing socket need different fixes.
 func unavailableAnswer(err error) []byte {
@@ -56,6 +65,11 @@ func unavailableAnswer(err error) []byte {
 			detail = "eof"
 		}
 	}
+	var stage *stageError
+	for errors.As(err, &stage) {
+		detail += "@" + stage.stage
+		err = stage.err
+	}
 	return []byte(`{"v":2,"hit":false,"reason":"unavailable","detail":"` + detail + `"}`)
 }
 
@@ -65,7 +79,7 @@ func unavailableAnswer(err error) []byte {
 func lookupV2(socketPath string, conn syscall.Conn) ([]byte, error) {
 	sidecar, err := net.DialTimeout("unix", socketPath, v2Deadline)
 	if err != nil {
-		return nil, err
+		return nil, &stageError{"dial", err}
 	}
 	defer sidecar.Close()
 	unixConn, ok := sidecar.(*net.UnixConn)
@@ -86,7 +100,7 @@ func lookupV2(socketPath string, conn syscall.Conn) ([]byte, error) {
 		return nil, err
 	}
 	if sendErr != nil {
-		return nil, sendErr
+		return nil, &stageError{"write", sendErr}
 	}
 	return readV2Response(unixConn)
 }
@@ -119,7 +133,7 @@ func lookupV2ByAddress(socketPath, remoteAddr string) ([]byte, error) {
 
 	sidecar, err := net.DialTimeout("unix", socketPath, v2Deadline)
 	if err != nil {
-		return nil, err
+		return nil, &stageError{"dial", err}
 	}
 	defer sidecar.Close()
 	unixConn, ok := sidecar.(*net.UnixConn)
@@ -130,7 +144,7 @@ func lookupV2ByAddress(socketPath, remoteAddr string) ([]byte, error) {
 		return nil, err
 	}
 	if _, err := unixConn.Write(req); err != nil {
-		return nil, err
+		return nil, &stageError{"write", err}
 	}
 	return readV2Response(unixConn)
 }
@@ -138,7 +152,7 @@ func lookupV2ByAddress(socketPath, remoteAddr string) ([]byte, error) {
 func readV2Response(unixConn *net.UnixConn) ([]byte, error) {
 	var length [4]byte
 	if _, err := io.ReadFull(unixConn, length[:]); err != nil {
-		return nil, err
+		return nil, &stageError{"read", err}
 	}
 	n := binary.BigEndian.Uint32(length[:])
 	if n > v2MaxResponse {
@@ -146,7 +160,7 @@ func readV2Response(unixConn *net.UnixConn) ([]byte, error) {
 	}
 	body := make([]byte, n)
 	if _, err := io.ReadFull(unixConn, body); err != nil {
-		return nil, err
+		return nil, &stageError{"read_body", err}
 	}
 	return body, nil
 }
