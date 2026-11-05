@@ -44,9 +44,8 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: 1
 
 jobs:
-  # Runs on drafts too: a cheap check that should catch a broken workflow before review.
-  # workflow-lint: allow pr-types -- workflow lint is a cheap safety check that runs on drafts
   workflow-lint:
+    # workflow-lint: allow pr-types -- cheap safety check, runs on drafts to catch a broken workflow before review
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
     timeout-minutes: 15
