@@ -97,4 +97,3 @@ var (
 	_ caddy.ListenerWrapper = (*ClientHelloListenerWrapper)(nil)
 	_ caddyfile.Unmarshaler = (*ClientHelloListenerWrapper)(nil)
 )
-

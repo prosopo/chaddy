@@ -13,11 +13,11 @@ import (
 // ClientHelloConnWrapper is a custom wrapper for net.Conn that intercepts the Read operation
 // and allows us to collect the client hello bytes
 type ClientHelloConnWrapper struct {
-	net.Conn // embed the net.Conn interface (crucial for setReadTimeout to be applied by caddy to avoid blocking reads!)
-	log    *zap.Logger
-	bufferedReader *bufio.Reader
-	done   bool
-	cache *Cache
+	net.Conn        // embed the net.Conn interface (crucial for setReadTimeout to be applied by caddy to avoid blocking reads!)
+	log             *zap.Logger
+	bufferedReader  *bufio.Reader
+	done            bool
+	cache           *Cache
 	connectionStart time.Time // when listener.Accept() returned — plumbed in so Read can compute tcp_to_chello_us
 	tcpProbeSocket  string
 
@@ -32,11 +32,11 @@ func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger, con
 	// create a buffered reader for the conn
 	bufferedReader := bufio.NewReaderSize(conn, 65536) // 64KB buffer, the max size of a TLS record
 	return &ClientHelloConnWrapper{
-		Conn:   conn,
-		log:    log,
-		bufferedReader: bufferedReader,
-		done:   false, // we haven't read the client hello yet
-		cache: cache,
+		Conn:            conn,
+		log:             log,
+		bufferedReader:  bufferedReader,
+		done:            false, // we haven't read the client hello yet
+		cache:           cache,
 		connectionStart: connectionStart,
 		tcpProbeSocket:  tcpProbeSocket,
 	}
@@ -53,7 +53,7 @@ func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 	r.log.Debug("Reading client hello")
 
 	r.done = true // we only want to read the client hello once
-	
+
 	// use the buffered reader to read the client hello
 	// we peek here so we can read the client hello without consuming it
 

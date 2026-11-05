@@ -1,0 +1,95 @@
+# CI entry point: the only workflow with PR/push triggers. It calls the stage
+# workflows: go.yml (this repo's Go stage) and the shared pr-housekeeping from
+# prosopo/github_actions, plus an inline workflow lint. The shared static, test,
+# build and security stages are not called: they detect send.ts (a manual test
+# script, no package.json or lockfile) as a JS workspace and would fail running
+# pnpm, and they have no Go support.
+# Follow the existing layout: a new workflow, stage or structural change needs a
+# written justification in the PR description and review by the .github/ code
+# owners (.github/CODEOWNERS).
+# workflow-lint: entry point -- trigger-only caller, not callable by design.
+
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runs-on: {description: "Runner label.", type: string, default: "ubuntu-latest"}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+  FORCE_COLOR: 1
+  TURBO_TELEMETRY_DISABLED: 1
+  DO_NOT_TRACK: 1
+  PYTHONUNBUFFERED: 1
+  PIP_DISABLE_PIP_VERSION_CHECK: 1
+
+jobs:
+  # Runs on drafts too: a cheap check that should catch a broken workflow before review.
+  # workflow-lint: allow pr-types -- workflow lint is a cheap safety check that runs on drafts
+  workflow-lint:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        timeout-minutes: 5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        timeout-minutes: 5
+        with:
+          repository: prosopo/github_actions
+          ref: 7a52d4663836059f0c6cf1c7a29186cd4d8b49a4
+          path: .shared-actions
+      - uses: ./.shared-actions/.github/actions/print_contexts
+        timeout-minutes: 2
+        with:
+          VARS_CONTEXT: ${{ toJson(vars) }}
+      - name: actionlint
+        timeout-minutes: 5
+        run: |
+          timeout 4m curl -fsSL -o actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar xzf actionlint.tgz actionlint
+          ./actionlint -color
+      - uses: ./.shared-actions/.github/actions/workflow-lint
+        timeout-minutes: 3
+      - uses: ./.shared-actions/.github/actions/check-timeouts
+        timeout-minutes: 3
+
+  go:
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft) }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/go.yml
+    with:
+      runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
+      concurrency-key: ${{ github.event.pull_request.number || github.ref }}
+
+  housekeeping:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+    uses: prosopo/github_actions/.github/workflows/pr-housekeeping.yml@7a52d4663836059f0c6cf1c7a29186cd4d8b49a4
+    with:
+      actions-ref: 7a52d4663836059f0c6cf1c7a29186cd4d8b49a4
+      runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}

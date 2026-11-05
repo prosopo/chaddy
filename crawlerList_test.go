@@ -63,7 +63,7 @@ func TestCrawlerListMatches(t *testing.T) {
 		{"browser UA from a listed range", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/99.0.4844.51 Safari/537.36", "116.179.37.2:51234", "", true},
 		{"just outside the listed range", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/99.0.4844.51 Safari/537.36", "116.179.48.1:51234", "", false},
 		{"ipv4-mapped address from a dual-stack listener", "Mozilla/5.0 Chrome/99.0.4844.51", "[::ffff:116.179.37.2]:51234", "", true},
-		{"ipv6 range","Mozilla/5.0 Chrome/145.0.0.0", "[2001:db8::7]:443", "", true},
+		{"ipv6 range", "Mozilla/5.0 Chrome/145.0.0.0", "[2001:db8::7]:443", "", true},
 		{"signed request from a listed range", "Mozilla/5.0 Chrome/145.0.0.0", "116.179.37.2:51234", `"https://chatgpt.com"`, false},
 		{"allowed agent from a listed range", "Mozilla/5.0 (compatible; Claude-User/1.0)", "116.179.37.2:51234", "", false},
 	}

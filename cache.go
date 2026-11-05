@@ -13,7 +13,7 @@ const (
 )
 
 func init() {
-	caddy.RegisterModule(Cache{})
+	caddy.RegisterModule(new(Cache))
 }
 
 type CacheEntry struct {
@@ -30,12 +30,12 @@ type TimingEntry struct {
 }
 
 type Cache struct {
-	clientHellos map[string]CacheEntry
-	timings      map[string]TimingEntry
-	handshakes   map[string]HandshakeRecord
+	clientHellos  map[string]CacheEntry
+	timings       map[string]TimingEntry
+	handshakes    map[string]HandshakeRecord
 	handshakeRtts map[string]time.Duration
-	lock         sync.RWMutex
-	logger *zap.Logger
+	lock          sync.RWMutex
+	logger        *zap.Logger
 }
 
 func (c *Cache) Provision(ctx caddy.Context) error {
@@ -57,8 +57,8 @@ func (c *Cache) SetClientHello(addr string, encoded string) {
 	defer c.lock.Unlock()
 
 	c.clientHellos[addr] = CacheEntry{
-        Value:      encoded,
-    }
+		Value: encoded,
+	}
 
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
@@ -150,17 +150,17 @@ func (c *Cache) GetClientHello(addr string) *string {
 	c.logger.Debug("GetClientHello", zap.String("addr", addr))
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-    entry, found := c.clientHellos[addr]
+	entry, found := c.clientHellos[addr]
 
-    if !found {
-        return nil // Entry doesn't exist
-    }
+	if !found {
+		return nil // Entry doesn't exist
+	}
 
 	return &entry.Value
 }
 
 // CaddyModule implements caddy.Module
-func (Cache) CaddyModule() caddy.ModuleInfo {
+func (*Cache) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  CacheAppId,
 		New: func() caddy.Module { return new(Cache) },
