@@ -1,5 +1,7 @@
 # caddy-clienthello
 
+[![ci](https://github.com/prosopo/chaddy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/prosopo/chaddy/actions/workflows/ci.yml) [![license](https://img.shields.io/github/license/prosopo/chaddy)](LICENSE)
+
 A caddy plugin to forward TLS `ClientHello` packets on requests as a header.
 
 ## Building locally
