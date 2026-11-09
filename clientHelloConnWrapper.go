@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"net"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -13,13 +14,18 @@ import (
 // ClientHelloConnWrapper is a custom wrapper for net.Conn that intercepts the Read operation
 // and allows us to collect the client hello bytes
 type ClientHelloConnWrapper struct {
-	net.Conn // embed the net.Conn interface (crucial for setReadTimeout to be applied by caddy to avoid blocking reads!)
-	log    *zap.Logger
-	bufferedReader *bufio.Reader
-	done   bool
-	cache *Cache
+	net.Conn        // embed the net.Conn interface (crucial for setReadTimeout to be applied by caddy to avoid blocking reads!)
+	log             *zap.Logger
+	bufferedReader  *bufio.Reader
+	done            bool
+	cache           *Cache
 	connectionStart time.Time // when listener.Accept() returned — plumbed in so Read can compute tcp_to_chello_us
 	tcpProbeSocket  string
+
+	// Offset from connectionStart of the server's latest write, held until
+	// the client's first reply to it has been read. See Write.
+	serverFlightSentAt atomic.Int64
+	handshakeRttTaken  atomic.Bool
 }
 
 // NewClientHelloConnWrapper creates a new wrapper
@@ -27,11 +33,11 @@ func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger, con
 	// create a buffered reader for the conn
 	bufferedReader := bufio.NewReaderSize(conn, 65536) // 64KB buffer, the max size of a TLS record
 	return &ClientHelloConnWrapper{
-		Conn:   conn,
-		log:    log,
-		bufferedReader: bufferedReader,
-		done:   false, // we haven't read the client hello yet
-		cache: cache,
+		Conn:            conn,
+		log:             log,
+		bufferedReader:  bufferedReader,
+		done:            false, // we haven't read the client hello yet
+		cache:           cache,
 		connectionStart: connectionStart,
 		tcpProbeSocket:  tcpProbeSocket,
 	}
@@ -42,13 +48,13 @@ func NewClientHelloConnWrapper(conn net.Conn, cache *Cache, log *zap.Logger, con
 func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 	if r.done {
 		// we've already read the client hello, just pass through to the buffered reader
-		return r.bufferedReader.Read(b)
+		return r.readTimingHandshakeRtt(b)
 	}
 
 	r.log.Debug("Reading client hello")
 
 	r.done = true // we only want to read the client hello once
-	
+
 	// use the buffered reader to read the client hello
 	// we peek here so we can read the client hello without consuming it
 
@@ -112,6 +118,39 @@ func (r *ClientHelloConnWrapper) Read(b []byte) (n int, err error) {
 
 	// delegate the original read call to the buffered reader
 	return r.bufferedReader.Read(b)
+}
+
+// Write records when the server's handshake flight was handed to the kernel.
+// Only the last write before the client's reply counts, because a flight can
+// span several writes.
+func (r *ClientHelloConnWrapper) Write(b []byte) (int, error) {
+	n, err := r.Conn.Write(b)
+	if !r.handshakeRttTaken.Load() {
+		r.serverFlightSentAt.Store(int64(time.Since(r.connectionStart)))
+	}
+	return n, err
+}
+
+// readTimingHandshakeRtt times the server's handshake flight against the
+// client's reply to it: a round trip to whatever terminates TLS on the client
+// side, as opposed to the tcp-probe's SYN-ACK to ACK, which is a round trip to
+// whatever opened the TCP connection.
+//
+// Only the first read after the flight is timed. If the reply was already
+// buffered it arrived before the flight could have been answered, so there is
+// nothing honest to report and the connection goes without a value.
+func (r *ClientHelloConnWrapper) readTimingHandshakeRtt(b []byte) (int, error) {
+	sentAt := r.serverFlightSentAt.Load()
+	if sentAt == 0 || r.handshakeRttTaken.Load() {
+		return r.bufferedReader.Read(b)
+	}
+	alreadyBuffered := r.bufferedReader.Buffered() > 0
+	n, err := r.bufferedReader.Read(b)
+	if n > 0 && r.handshakeRttTaken.CompareAndSwap(false, true) && !alreadyBuffered {
+		rtt := time.Since(r.connectionStart) - time.Duration(sentAt)
+		r.cache.SetHandshakeRttIfOpen(r.Conn.RemoteAddr().String(), rtt)
+	}
+	return n, err
 }
 
 func (r *ClientHelloConnWrapper) primeHandshake(addr string) {

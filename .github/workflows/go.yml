@@ -1,0 +1,87 @@
+# Go stage: gofmt, go vet, go test -race and go build for this caddy module.
+# Called by ci.yml (the only trigger entry point); runnable by hand too.
+# It lives here, not in prosopo/github_actions, because the shared stage
+# workflows (static/test/build) detect js, rust and python only, not Go.
+# Follow the existing layout: a new workflow, stage or structural change needs a
+# written justification in the PR description and review by the .github/ code
+# owners (.github/CODEOWNERS).
+
+name: go
+
+on:
+  workflow_call:
+    inputs:
+      runs-on: {description: "Runner label.", type: string, default: "ubuntu-latest"}
+      concurrency-key:
+        description: "Concurrency group suffix; defaults to the ref."
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      runs-on: {description: "Runner label.", type: string, default: "ubuntu-latest"}
+      concurrency-key:
+        description: "Concurrency group suffix; defaults to the ref."
+        type: string
+        default: ""
+
+concurrency:
+  group: go-${{ inputs.concurrency-key || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+  FORCE_COLOR: 1
+  TURBO_TELEMETRY_DISABLED: 1
+  DO_NOT_TRACK: 1
+  PYTHONUNBUFFERED: 1
+  PIP_DISABLE_PIP_VERSION_CHECK: 1
+
+jobs:
+  go:
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft) }}
+    runs-on: ${{ inputs.runs-on || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        timeout-minutes: 5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        timeout-minutes: 5
+        with:
+          repository: prosopo/github_actions
+          ref: 7a52d4663836059f0c6cf1c7a29186cd4d8b49a4
+          path: .shared-actions
+      - uses: ./.shared-actions/.github/actions/print_contexts
+        timeout-minutes: 2
+        with:
+          VARS_CONTEXT: ${{ toJson(vars) }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        timeout-minutes: 10
+        with:
+          go-version-file: go.mod
+          # The module cache upload is a side effect; skip it under act.
+          cache: ${{ !env.ACT }}
+      - name: gofmt
+        timeout-minutes: 5
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "::error::gofmt needed on: $unformatted"; exit 1; fi
+      - name: go vet
+        timeout-minutes: 15
+        run: timeout 600 go vet ./...
+      - name: go test
+        timeout-minutes: 20
+        run: timeout 900 go test -race ./...
+      - name: go build
+        timeout-minutes: 15
+        run: timeout 600 go build ./...

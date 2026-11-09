@@ -127,6 +127,10 @@ func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request
 			)
 		}
 
+		if rtt := h.cache.GetHandshakeRtt(req.RemoteAddr); rtt != nil {
+			req.Header.Set("X-TLS-Handshake-Rtt-Us", strconv.FormatInt(rtt.Microseconds(), 10))
+		}
+
 		// Optional: enrich with raw TCP handshake signals from a
 		// co-located eBPF probe. Everything sent is a wire-observed
 		// primitive (RFC 793 / RFC 9293) — no fingerprints or derived

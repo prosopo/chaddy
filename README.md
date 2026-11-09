@@ -1,5 +1,7 @@
 # caddy-clienthello
 
+[![ci](https://github.com/prosopo/chaddy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/prosopo/chaddy/actions/workflows/ci.yml) [![license](https://img.shields.io/github/license/prosopo/chaddy)](LICENSE)
+
 A caddy plugin to forward TLS `ClientHello` packets on requests as a header.
 
 ## Building locally
@@ -78,6 +80,16 @@ This module also disables TLS session resumption globally to always retrieve a f
 This is done through the usage of
 [caddytls's `session_tickets/disabled`](https://caddyserver.com/docs/modules/tls#session_tickets/disabled)
 config option automatically.
+
+## TLS handshake round trip
+
+`X-TLS-Handshake-Rtt-Us` is the time, in microseconds, from the server's handshake flight leaving Caddy to
+the client's reply to it arriving: one round trip to whatever terminates TLS on the client side. It sits
+alongside the TCP probe's `X-TLS-Synack-Ns` → `X-TLS-Ack-Ns`, which is one round trip to whatever opened the
+TCP connection, and includes the client's handshake crypto.
+
+The header is absent when the client's reply was already buffered before the flight was sent, since it
+cannot then be timed.
 
 ## TCP probe socket
 

@@ -1,8 +1,8 @@
 package caddy_clienthello
 
 import (
-	"syscall"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -14,7 +14,7 @@ const (
 )
 
 func init() {
-	caddy.RegisterModule(Cache{})
+	caddy.RegisterModule(new(Cache))
 }
 
 type CacheEntry struct {
@@ -31,12 +31,13 @@ type TimingEntry struct {
 }
 
 type Cache struct {
-	clientHellos map[string]CacheEntry
-	timings      map[string]TimingEntry
-	handshakes   map[string]HandshakeRecord
-	conns        map[string]syscall.Conn
-	lock         sync.RWMutex
-	logger *zap.Logger
+	clientHellos  map[string]CacheEntry
+	timings       map[string]TimingEntry
+	handshakes    map[string]HandshakeRecord
+	handshakeRtts map[string]time.Duration
+	conns         map[string]syscall.Conn
+	lock          sync.RWMutex
+	logger        *zap.Logger
 }
 
 func (c *Cache) Provision(ctx caddy.Context) error {
@@ -49,6 +50,7 @@ func (c *Cache) init(logger *zap.Logger) {
 	c.timings = make(map[string]TimingEntry)
 	c.handshakes = make(map[string]HandshakeRecord)
 	c.conns = make(map[string]syscall.Conn)
+	c.handshakeRtts = make(map[string]time.Duration)
 	c.logger = logger
 }
 
@@ -58,8 +60,8 @@ func (c *Cache) SetClientHello(addr string, encoded string) {
 	defer c.lock.Unlock()
 
 	c.clientHellos[addr] = CacheEntry{
-        Value:      encoded,
-    }
+		Value: encoded,
+	}
 
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
@@ -72,6 +74,7 @@ func (c *Cache) ClearClientHello(addr string) {
 	delete(c.timings, addr)
 	delete(c.handshakes, addr)
 	delete(c.conns, addr)
+	delete(c.handshakeRtts, addr)
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
 
@@ -115,6 +118,28 @@ func (c *Cache) SetHandshakeIfOpen(addr string, rec HandshakeRecord) {
 	c.handshakes[addr] = rec
 }
 
+// SetHandshakeRttIfOpen keeps the TLS handshake round trip for the rest of
+// the connection's life, with the same closed-connection guard as
+// SetHandshakeIfOpen.
+func (c *Cache) SetHandshakeRttIfOpen(addr string, rtt time.Duration) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if _, open := c.clientHellos[addr]; !open {
+		return
+	}
+	c.handshakeRtts[addr] = rtt
+}
+
+func (c *Cache) GetHandshakeRtt(addr string) *time.Duration {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	rtt, found := c.handshakeRtts[addr]
+	if !found {
+		return nil
+	}
+	return &rtt
+}
+
 func (c *Cache) GetHandshake(addr string) *HandshakeRecord {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
@@ -143,17 +168,17 @@ func (c *Cache) GetClientHello(addr string) *string {
 	c.logger.Debug("GetClientHello", zap.String("addr", addr))
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-    entry, found := c.clientHellos[addr]
+	entry, found := c.clientHellos[addr]
 
-    if !found {
-        return nil // Entry doesn't exist
-    }
+	if !found {
+		return nil // Entry doesn't exist
+	}
 
 	return &entry.Value
 }
 
 // CaddyModule implements caddy.Module
-func (Cache) CaddyModule() caddy.ModuleInfo {
+func (*Cache) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  CacheAppId,
 		New: func() caddy.Module { return new(Cache) },
