@@ -2,6 +2,7 @@ package caddy_clienthello
 
 import (
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -13,7 +14,7 @@ const (
 )
 
 func init() {
-	caddy.RegisterModule(Cache{})
+	caddy.RegisterModule(new(Cache))
 }
 
 type CacheEntry struct {
@@ -30,17 +31,27 @@ type TimingEntry struct {
 }
 
 type Cache struct {
-	clientHellos map[string]CacheEntry
-	timings      map[string]TimingEntry
-	lock         sync.RWMutex
-	logger *zap.Logger
+	clientHellos  map[string]CacheEntry
+	timings       map[string]TimingEntry
+	handshakes    map[string]HandshakeRecord
+	handshakeRtts map[string]time.Duration
+	conns         map[string]syscall.Conn
+	lock          sync.RWMutex
+	logger        *zap.Logger
 }
 
 func (c *Cache) Provision(ctx caddy.Context) error {
+	c.init(ctx.Logger(c))
+	return nil
+}
+
+func (c *Cache) init(logger *zap.Logger) {
 	c.clientHellos = make(map[string]CacheEntry)
 	c.timings = make(map[string]TimingEntry)
-	c.logger = ctx.Logger(c)
-	return nil
+	c.handshakes = make(map[string]HandshakeRecord)
+	c.conns = make(map[string]syscall.Conn)
+	c.handshakeRtts = make(map[string]time.Duration)
+	c.logger = logger
 }
 
 func (c *Cache) SetClientHello(addr string, encoded string) {
@@ -49,8 +60,8 @@ func (c *Cache) SetClientHello(addr string, encoded string) {
 	defer c.lock.Unlock()
 
 	c.clientHellos[addr] = CacheEntry{
-        Value:      encoded,
-    }
+		Value: encoded,
+	}
 
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
@@ -61,6 +72,9 @@ func (c *Cache) ClearClientHello(addr string) {
 	defer c.lock.Unlock()
 	delete(c.clientHellos, addr)
 	delete(c.timings, addr)
+	delete(c.handshakes, addr)
+	delete(c.conns, addr)
+	delete(c.handshakeRtts, addr)
 	c.logger.Info("cache size", zap.Int("size", len(c.clientHellos)))
 }
 
@@ -91,21 +105,80 @@ func (c *Cache) GetTiming(addr string) *TimingEntry {
 	return &entry
 }
 
+// SetHandshakeIfOpen keeps a connection's TCP handshake record for the rest
+// of its life. It stores nothing once the connection has closed: a lookup
+// still in flight at close would otherwise leave a record behind for the
+// next connection that happens to reuse the same address.
+func (c *Cache) SetHandshakeIfOpen(addr string, rec HandshakeRecord) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if _, open := c.clientHellos[addr]; !open {
+		return
+	}
+	c.handshakes[addr] = rec
+}
+
+// SetHandshakeRttIfOpen keeps the TLS handshake round trip for the rest of
+// the connection's life, with the same closed-connection guard as
+// SetHandshakeIfOpen.
+func (c *Cache) SetHandshakeRttIfOpen(addr string, rtt time.Duration) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if _, open := c.clientHellos[addr]; !open {
+		return
+	}
+	c.handshakeRtts[addr] = rtt
+}
+
+func (c *Cache) GetHandshakeRtt(addr string) *time.Duration {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	rtt, found := c.handshakeRtts[addr]
+	if !found {
+		return nil
+	}
+	return &rtt
+}
+
+func (c *Cache) GetHandshake(addr string) *HandshakeRecord {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	rec, found := c.handshakes[addr]
+	if !found {
+		return nil
+	}
+	return &rec
+}
+
+// SetConn remembers the connection's socket so each request can pass it to
+// tcp-probe. Cleared on close, so a reused address never finds the old socket.
+func (c *Cache) SetConn(addr string, conn syscall.Conn) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.conns[addr] = conn
+}
+
+func (c *Cache) GetConn(addr string) syscall.Conn {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	return c.conns[addr]
+}
+
 func (c *Cache) GetClientHello(addr string) *string {
 	c.logger.Debug("GetClientHello", zap.String("addr", addr))
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-    entry, found := c.clientHellos[addr]
+	entry, found := c.clientHellos[addr]
 
-    if !found {
-        return nil // Entry doesn't exist
-    }
+	if !found {
+		return nil // Entry doesn't exist
+	}
 
 	return &entry.Value
 }
 
 // CaddyModule implements caddy.Module
-func (Cache) CaddyModule() caddy.ModuleInfo {
+func (*Cache) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  CacheAppId,
 		New: func() caddy.Module { return new(Cache) },

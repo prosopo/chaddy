@@ -86,7 +86,7 @@ func (l *clientHelloListener) Accept() (net.Conn, error) {
 	connectionStart := time.Now()
 
 	// wrap the conn in a ClientHelloConnWrapper to intercept the client hello
-	conn = NewClientHelloConnWrapper(conn, l.cache, l.log, connectionStart)
+	conn = NewClientHelloConnWrapper(conn, l.cache, l.log, connectionStart, l.config.TcpProbeSocket)
 
 	return conn, nil
 }
@@ -97,4 +97,3 @@ var (
 	_ caddy.ListenerWrapper = (*ClientHelloListenerWrapper)(nil)
 	_ caddyfile.Unmarshaler = (*ClientHelloListenerWrapper)(nil)
 )
-
