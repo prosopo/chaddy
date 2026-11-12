@@ -81,6 +81,7 @@ func (h *ClientHelloHandler) UnmarshalCaddyfile(_ *caddyfile.Dispenser) error {
 func (h *ClientHelloHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
 	h.log.Debug("ClientHelloHandler: ServeHTTP")
 
+	applyHeaderOrder(req)
 	stripForgedHeaders(req.Header)
 
 	if req.TLS != nil && req.TLS.HandshakeComplete && req.ProtoMajor < 3 { // Check that this uses TLS and < HTTP/3
